@@ -1,0 +1,146 @@
+---
+# ==============================================================================
+# Playbook: install-jenkins.yml
+# Purpose: Install Jenkins on the DevOps machine
+# Run: ansible-playbook playbooks/install-jenkins.yml
+# ==============================================================================
+
+- name: Install Jenkins on DevOps machine
+  hosts: devops
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Install Java 17 (required by Jenkins)
+    # ------------------------------------------------------------------
+    - name: Install Java 17 JDK
+      apt:
+        name: openjdk-17-jdk
+        state: present
+        update_cache: yes
+
+    # ------------------------------------------------------------------
+    # 2. Add Jenkins repository
+    # ------------------------------------------------------------------
+    - name: Add Jenkins GPG key
+      apt_key:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        state: present
+
+    - name: Add Jenkins repository
+      apt_repository:
+        repo: "deb https://pkg.jenkins.io/debian-stable binary/"
+        state: present
+        filename: jenkins
+
+    # ------------------------------------------------------------------
+    # 3. Install Jenkins
+    # ------------------------------------------------------------------
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+
+    # ------------------------------------------------------------------
+    # 4. Start and enable Jenkins
+    # ------------------------------------------------------------------
+    - name: Start and enable Jenkins service
+      systemd:
+        name: jenkins
+        state: started
+        enabled: yes
+
+    # ------------------------------------------------------------------
+    # 5. Install Docker on DevOps (for building images)
+    # ------------------------------------------------------------------
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Start Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    # ------------------------------------------------------------------
+    # 6. Add jenkins user to docker group
+    # ------------------------------------------------------------------
+    - name: Add jenkins user to docker group
+      user:
+        name: jenkins
+        groups: docker
+        append: yes
+
+    - name: Restart Jenkins to apply group changes
+      systemd:
+        name: jenkins
+        state: restarted
+
+    # ------------------------------------------------------------------
+    # 7. Install kubectl on DevOps machine
+    # ------------------------------------------------------------------
+    - name: Download kubectl binary
+      get_url:
+        url: "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: '0755'
+
+    # ------------------------------------------------------------------
+    # 8. Configure Docker to use Nexus as insecure registry
+    # ------------------------------------------------------------------
+    - name: Create Docker daemon.json for insecure registry
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "insecure-registries": ["192.168.56.20:8082"]
+          }
+      notify: restart docker
+
+    # ------------------------------------------------------------------
+    # 9. Display initial admin password
+    # ------------------------------------------------------------------
+    - name: Wait for Jenkins to generate initial password
+      wait_for:
+        path: /var/lib/jenkins/secrets/initialAdminPassword
+        timeout: 120
+
+    - name: Get Jenkins initial admin password
+      command: cat /var/lib/jenkins/secrets/initialAdminPassword
+      register: jenkins_password
+
+    - name: Display Jenkins initial admin password
+      debug:
+        msg: |
+          ============================================
+          Jenkins Initial Admin Password:
+          {{ jenkins_password.stdout }}
+          Access Jenkins at: http://192.168.56.20:8080
+          ============================================
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted

@@ -1,0 +1,101 @@
+---
+# ==============================================================================
+# Playbook: install-containerd.yml
+# Purpose: Install containerd as the container runtime on all K8s nodes
+# Run: ansible-playbook playbooks/install-containerd.yml
+# ==============================================================================
+
+- name: Install and configure containerd
+  hosts: k8s_cluster
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Add Docker's official GPG key and repository (containerd is part of Docker repo)
+    # ------------------------------------------------------------------
+    - name: Create keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
+    # ------------------------------------------------------------------
+    # 2. Install containerd
+    # ------------------------------------------------------------------
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install containerd.io
+      apt:
+        name: containerd.io
+        state: present
+
+    # ------------------------------------------------------------------
+    # 3. Configure containerd to use systemd cgroup driver
+    # ------------------------------------------------------------------
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: Remove old containerd config (to regenerate cleanly)
+      file:
+        path: /etc/containerd/config.toml
+        state: absent
+
+    - name: Generate fresh default containerd config
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: Set SystemdCgroup to true in containerd config
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    # ------------------------------------------------------------------
+    # 4. Configure containerd to trust Nexus insecure registry
+    #    Using config_path approach with certs.d directory (safe, no TOML corruption)
+    # ------------------------------------------------------------------
+    - name: Enable registry config_path in containerd config
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'config_path = ""'
+        replace: 'config_path = "/etc/containerd/certs.d"'
+
+    - name: Create Nexus registry certs directory
+      file:
+        path: /etc/containerd/certs.d/192.168.56.20:8082
+        state: directory
+        mode: '0755'
+
+    - name: Create Nexus registry hosts.toml config
+      copy:
+        dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
+        content: |
+          server = "http://192.168.56.20:8082"
+
+          [host."http://192.168.56.20:8082"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+
+    # ------------------------------------------------------------------
+    # 5. Restart and enable containerd
+    # ------------------------------------------------------------------
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        daemon_reload: yes
+        enabled: yes

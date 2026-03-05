@@ -1,0 +1,36 @@
+---
+# ==============================================================================
+# Kubernetes Deployment - Sample Application
+# Deploys 2 replicas from Nexus private Docker registry
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-devops
+  labels:
+    app: hello-devops
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hello-devops
+  template:
+    metadata:
+      labels:
+        app: hello-devops
+    spec:
+      containers:
+        - name: hello-devops
+          image: 192.168.56.20:8082/hello-devops:latest
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "250m"
+      imagePullSecrets:
+        - name: nexus-registry-secret

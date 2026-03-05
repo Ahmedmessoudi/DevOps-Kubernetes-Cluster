@@ -1,0 +1,91 @@
+---
+# ==============================================================================
+# Playbook: configure-kubectl-devops.yml
+# Purpose: Copy kubeconfig from master to devops so Jenkins can deploy to K8s
+# Run: ansible-playbook playbooks/configure-kubectl-devops.yml
+# ==============================================================================
+
+- name: Fetch kubeconfig from master
+  hosts: masters
+  become: yes
+  tasks:
+    - name: Read kubeconfig from master
+      slurp:
+        src: /etc/kubernetes/admin.conf
+      register: kubeconfig_content
+
+    - name: Set kubeconfig fact
+      set_fact:
+        kubeconfig_data: "{{ kubeconfig_content.content | b64decode }}"
+
+- name: Configure kubectl on DevOps machine
+  hosts: devops
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Set up kubectl for vagrant user
+    # ------------------------------------------------------------------
+    - name: Create .kube directory for vagrant user
+      file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Write kubeconfig for vagrant user
+      copy:
+        content: "{{ hostvars['k8s-master']['kubeconfig_data'] }}"
+        dest: /home/vagrant/.kube/config
+        owner: vagrant
+        group: vagrant
+        mode: '0600'
+
+    # ------------------------------------------------------------------
+    # 2. Set up kubectl for jenkins user
+    # ------------------------------------------------------------------
+    - name: Create .kube directory for jenkins user
+      file:
+        path: /var/lib/jenkins/.kube
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+
+    - name: Write kubeconfig for jenkins user
+      copy:
+        content: "{{ hostvars['k8s-master']['kubeconfig_data'] }}"
+        dest: /var/lib/jenkins/.kube/config
+        owner: jenkins
+        group: jenkins
+        mode: '0600'
+
+    # ------------------------------------------------------------------
+    # 3. Update kubeconfig to point to master's IP
+    # ------------------------------------------------------------------
+    - name: Update API server address in vagrant kubeconfig
+      replace:
+        path: /home/vagrant/.kube/config
+        regexp: 'server: https://[^:]+:6443'
+        replace: 'server: https://192.168.56.10:6443'
+
+    - name: Update API server address in jenkins kubeconfig
+      replace:
+        path: /var/lib/jenkins/.kube/config
+        regexp: 'server: https://[^:]+:6443'
+        replace: 'server: https://192.168.56.10:6443'
+
+    # ------------------------------------------------------------------
+    # 4. Verify kubectl access
+    # ------------------------------------------------------------------
+    - name: Verify kubectl works from devops (vagrant)
+      become_user: vagrant
+      command: kubectl get nodes
+      register: kubectl_output
+      ignore_errors: yes
+
+    - name: Display kubectl output
+      debug:
+        msg: "{{ kubectl_output.stdout_lines }}"
+      when: kubectl_output.rc == 0

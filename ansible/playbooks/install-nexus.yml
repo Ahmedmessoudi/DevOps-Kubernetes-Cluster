@@ -1,0 +1,101 @@
+---
+# ==============================================================================
+# Playbook: install-nexus.yml
+# Purpose: Install Nexus Repository Manager as Docker container on DevOps machine
+# Run: ansible-playbook playbooks/install-nexus.yml
+# ==============================================================================
+
+- name: Install Nexus Repository on DevOps machine
+  hosts: devops
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Create Nexus data directory
+    # ------------------------------------------------------------------
+    - name: Create Nexus data directory
+      file:
+        path: /opt/nexus-data
+        state: directory
+        owner: "200"
+        group: "200"
+        mode: '0755'
+
+    # ------------------------------------------------------------------
+    # 2. Pull and run Nexus container
+    # ------------------------------------------------------------------
+    - name: Pull Nexus Docker image
+      docker_image:
+        name: sonatype/nexus3
+        tag: latest
+        source: pull
+
+    - name: Run Nexus container
+      docker_container:
+        name: nexus
+        image: sonatype/nexus3:latest
+        state: started
+        restart_policy: always
+        ports:
+          - "8081:8081"    # Nexus Web UI
+          - "8082:8082"    # Docker Registry (hosted)
+        volumes:
+          - "/opt/nexus-data:/nexus-data"
+        env:
+          INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=512m"
+
+    # ------------------------------------------------------------------
+    # 3. Wait for Nexus to be ready
+    # ------------------------------------------------------------------
+    - name: Wait for Nexus to start (may take 2-3 minutes)
+      uri:
+        url: http://localhost:8081/service/rest/v1/status
+        method: GET
+        status_code: 200
+      register: nexus_status
+      until: nexus_status.status == 200
+      retries: 30
+      delay: 10
+
+    # ------------------------------------------------------------------
+    # 4. Get Nexus admin password
+    # ------------------------------------------------------------------
+    - name: Get Nexus initial admin password
+      command: docker exec nexus cat /nexus-data/admin.password
+      register: nexus_password
+      ignore_errors: yes
+
+    - name: Display Nexus access information
+      debug:
+        msg: |
+          ============================================
+          Nexus Repository Manager is running!
+          Web UI:          http://192.168.56.20:8081
+          Docker Registry: http://192.168.56.20:8082
+          Username:        admin
+          Password:        {{ nexus_password.stdout | default('Check /opt/nexus-data/admin.password') }}
+          ============================================
+          
+          IMPORTANT: After first login, you must:
+          1. Change the admin password
+          2. Create a Docker (hosted) repository:
+             - Go to Settings > Repositories > Create Repository
+             - Select "docker (hosted)"
+             - Name: docker-hosted
+             - HTTP port: 8082
+             - Enable "Allow anonymous docker pull"
+             - Click "Create repository"
+          ============================================
+
+    # ------------------------------------------------------------------
+    # 5. Install docker Python module (required for Ansible docker modules)
+    # ------------------------------------------------------------------
+    - name: Install pip3
+      apt:
+        name: python3-pip
+        state: present
+
+    - name: Install Docker SDK for Python
+      pip:
+        name: docker
+        state: present

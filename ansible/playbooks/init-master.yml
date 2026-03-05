@@ -1,0 +1,102 @@
+---
+# ==============================================================================
+# Playbook: init-master.yml
+# Purpose: Initialize Kubernetes master node with kubeadm and install Calico CNI
+# Run: ansible-playbook playbooks/init-master.yml
+# ==============================================================================
+
+- name: Initialize Kubernetes Master Node
+  hosts: masters
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Check if cluster is already initialized
+    # ------------------------------------------------------------------
+    - name: Check if kubeadm has already been initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_init_check
+
+    # ------------------------------------------------------------------
+    # 2. Initialize the cluster with kubeadm
+    # ------------------------------------------------------------------
+    - name: Initialize Kubernetes cluster with kubeadm
+      command: >
+        kubeadm init
+        --apiserver-advertise-address=192.168.56.10
+        --pod-network-cidr=192.168.0.0/16
+        --node-name=k8s-master
+      when: not kubeadm_init_check.stat.exists
+      register: kubeadm_output
+
+    # ------------------------------------------------------------------
+    # 3. Set up kubeconfig for vagrant user
+    # ------------------------------------------------------------------
+    - name: Create .kube directory for vagrant user
+      file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Copy admin.conf to vagrant user kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/vagrant/.kube/config
+        remote_src: yes
+        owner: vagrant
+        group: vagrant
+        mode: '0644'
+
+    # ------------------------------------------------------------------
+    # 4. Set up kubeconfig for root user
+    # ------------------------------------------------------------------
+    - name: Create .kube directory for root
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy admin.conf to root kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        mode: '0644'
+
+    # ------------------------------------------------------------------
+    # 5. Install Calico CNI network plugin
+    # ------------------------------------------------------------------
+    - name: Download Calico manifest
+      get_url:
+        url: https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+        dest: /home/vagrant/calico.yaml
+        owner: vagrant
+        group: vagrant
+
+    - name: Apply Calico CNI
+      become_user: vagrant
+      command: kubectl apply -f /home/vagrant/calico.yaml
+      environment:
+        KUBECONFIG: /home/vagrant/.kube/config
+
+    # ------------------------------------------------------------------
+    # 6. Generate join command for worker nodes
+    # ------------------------------------------------------------------
+    - name: Generate kubeadm join command
+      command: kubeadm token create --print-join-command
+      register: join_command
+
+    - name: Save join command to file
+      copy:
+        content: "{{ join_command.stdout }}"
+        dest: /home/vagrant/join-command.sh
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Store join command as fact
+      set_fact:
+        kubernetes_join_command: "{{ join_command.stdout }}"

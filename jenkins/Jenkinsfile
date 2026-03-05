@@ -1,0 +1,159 @@
+// ==============================================================================
+// Jenkinsfile - CI/CD Pipeline for Hello DevOps Application
+// ==============================================================================
+// Pipeline stages:
+//   1. Checkout    - Pull source code from Git
+//   2. Install     - Install Node.js dependencies
+//   3. Test        - Run unit tests
+//   4. Build Image - Build Docker image
+//   5. Push Image  - Push to Nexus Docker registry
+//   6. Deploy      - Deploy to Kubernetes cluster
+// ==============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        // Nexus Docker Registry
+        NEXUS_REGISTRY = "192.168.56.20:8082"
+        IMAGE_NAME     = "hello-devops"
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+        FULL_IMAGE     = "${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+        LATEST_IMAGE   = "${NEXUS_REGISTRY}/${IMAGE_NAME}:latest"
+        
+        // Kubernetes
+        KUBE_CONFIG    = "/var/lib/jenkins/.kube/config"
+        
+        // Nexus credentials (configure in Jenkins Credentials store)
+        NEXUS_CREDS    = credentials('nexus-docker-credentials')
+    }
+
+    stages {
+
+        // ============================================================
+        // Stage 1: Checkout source code
+        // ============================================================
+        stage('Checkout') {
+            steps {
+                echo 'Pulling source code from Git...'
+                checkout scm
+            }
+        }
+
+        // ============================================================
+        // Stage 2: Install dependencies
+        // ============================================================
+        stage('Install Dependencies') {
+            steps {
+                echo 'Installing Node.js dependencies...'
+                dir('app') {
+                    sh 'npm install'
+                }
+            }
+        }
+
+        // ============================================================
+        // Stage 3: Run unit tests
+        // ============================================================
+        stage('Test') {
+            steps {
+                echo 'Running unit tests...'
+                dir('app') {
+                    sh 'npm test'
+                }
+            }
+            post {
+                always {
+                    echo 'Test stage completed'
+                }
+            }
+        }
+
+        // ============================================================
+        // Stage 4: Build Docker image
+        // ============================================================
+        stage('Build Docker Image') {
+            steps {
+                echo "Building Docker image: ${FULL_IMAGE}"
+                dir('app') {
+                    sh """
+                        docker build -t ${FULL_IMAGE} .
+                        docker tag ${FULL_IMAGE} ${LATEST_IMAGE}
+                    """
+                }
+            }
+        }
+
+        // ============================================================
+        // Stage 5: Push to Nexus Docker Registry
+        // ============================================================
+        stage('Push to Nexus') {
+            steps {
+                echo "Pushing image to Nexus: ${FULL_IMAGE}"
+                sh """
+                    echo ${NEXUS_CREDS_PSW} | docker login ${NEXUS_REGISTRY} -u ${NEXUS_CREDS_USR} --password-stdin
+                    docker push ${FULL_IMAGE}
+                    docker push ${LATEST_IMAGE}
+                    docker logout ${NEXUS_REGISTRY}
+                """
+            }
+        }
+
+        // ============================================================
+        // Stage 6: Deploy to Kubernetes
+        // ============================================================
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo 'Deploying to Kubernetes cluster...'
+                sh """
+                    export KUBECONFIG=${KUBE_CONFIG}
+
+                    # Update the deployment image
+                    kubectl set image deployment/hello-devops \
+                        hello-devops=${FULL_IMAGE} \
+                        --record || \
+                    kubectl apply -f kubernetes/deployment.yml
+
+                    # Apply the service (idempotent)
+                    kubectl apply -f kubernetes/service.yml
+
+                    # Wait for rollout to complete
+                    kubectl rollout status deployment/hello-devops --timeout=120s
+
+                    echo 'Deployment successful!'
+                    kubectl get pods -l app=hello-devops
+                    kubectl get svc hello-devops-service
+                """
+            }
+        }
+    }
+
+    // ============================================================
+    // Post-pipeline actions
+    // ============================================================
+    post {
+        success {
+            echo '''
+            ✅ ============================================
+            ✅ Pipeline completed successfully!
+            ✅ Application deployed to Kubernetes cluster.
+            ✅ Access at: http://<node-ip>:30080
+            ✅ ============================================
+            '''
+        }
+        failure {
+            echo '''
+            ❌ ============================================
+            ❌ Pipeline FAILED! Check the logs above.
+            ❌ ============================================
+            '''
+        }
+        always {
+            // Clean up Docker images to save space
+            sh """
+                docker rmi ${FULL_IMAGE} || true
+                docker rmi ${LATEST_IMAGE} || true
+            """
+        }
+    }
+}

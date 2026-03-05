@@ -1,0 +1,19 @@
+{
+    "name": "hello-devops",
+    "version": "1.0.0",
+    "description": "Sample application for Kubernetes CI/CD pipeline demo",
+    "main": "app.js",
+    "scripts": {
+        "start": "node app.js",
+        "test": "jest --coverage --forceExit"
+    },
+    "dependencies": {
+        "express": "^4.18.2"
+    },
+    "devDependencies": {
+        "jest": "^29.7.0",
+        "supertest": "^6.3.3"
+    },
+    "author": "DevOps Team",
+    "license": "MIT"
+}
