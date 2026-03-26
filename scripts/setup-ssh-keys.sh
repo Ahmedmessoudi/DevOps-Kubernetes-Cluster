@@ -1,8 +1,4 @@
-#!/bin/bash
-# ==============================================================================
-# SSH Key Setup Script
-# Run this script FROM the DevOps machine to distribute SSH keys to all nodes
-# ==============================================================================
+
 
 set -e
 

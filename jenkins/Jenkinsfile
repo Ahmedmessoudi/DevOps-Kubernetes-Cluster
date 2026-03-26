@@ -1,14 +1,4 @@
-// ==============================================================================
-// Jenkinsfile - CI/CD Pipeline for Hello DevOps Application
-// ==============================================================================
-// Pipeline stages:
-//   1. Checkout    - Pull source code from Git
-//   2. Install     - Install Node.js dependencies
-//   3. Test        - Run unit tests
-//   4. Build Image - Build Docker image
-//   5. Push Image  - Push to Nexus Docker registry
-//   6. Deploy      - Deploy to Kubernetes cluster
-// ==============================================================================
+
 
 pipeline {
     agent any

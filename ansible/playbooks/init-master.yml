@@ -1,9 +1,5 @@
 ---
-# ==============================================================================
-# Playbook: init-master.yml
-# Purpose: Initialize Kubernetes master node with kubeadm and install Calico CNI
-# Run: ansible-playbook playbooks/init-master.yml
-# ==============================================================================
+
 
 - name: Initialize Kubernetes Master Node
   hosts: masters

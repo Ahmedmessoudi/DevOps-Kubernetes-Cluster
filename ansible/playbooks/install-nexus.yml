@@ -1,9 +1,5 @@
 ---
-# ==============================================================================
-# Playbook: install-nexus.yml
-# Purpose: Install Nexus Repository Manager as Docker container on DevOps machine
-# Run: ansible-playbook playbooks/install-nexus.yml
-# ==============================================================================
+
 
 - name: Install Nexus Repository on DevOps machine
   hosts: devops

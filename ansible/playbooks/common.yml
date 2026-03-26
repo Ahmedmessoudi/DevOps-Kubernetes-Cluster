@@ -1,9 +1,5 @@
 ---
-# ==============================================================================
-# Playbook: common.yml
-# Purpose: Prepare ALL Kubernetes nodes (master + workers) with prerequisites
-# Run: ansible-playbook playbooks/common.yml
-# ==============================================================================
+
 
 - name: Common setup for all Kubernetes nodes
   hosts: k8s_cluster
