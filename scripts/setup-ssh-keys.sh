@@ -36,16 +36,16 @@ fi
 echo "[3/4] Distributing SSH key to cluster nodes..."
 for i in "${!NODES[@]}"; do
     IP="${NODES[$i]}"
-    HOSTNAME="${HOSTNAMES[$i]}"
-    echo "  Copying key to ${HOSTNAME} (${IP})..."
-    sshpass -p "${PASSWORD}" ssh-copy-id -o StrictHostKeyChecking=no -o PubkeyAuthentication=no ${USER}@${IP} 2>&1
+    NODE_HOSTNAME="${HOSTNAMES[$i]}"
+    echo "  Copying key to ${NODE_HOSTNAME} (${IP})..."
+    sshpass -p "${PASSWORD}" ssh-copy-id -o StrictHostKeyChecking=no ${USER}@${IP} 2>&1
     if [ $? -eq 0 ]; then
-        echo "  ${HOSTNAME} done"
+        echo "  ${NODE_HOSTNAME} done"
     else
-        echo "  FAILED for ${HOSTNAME}. Trying alternative method..."
+        echo "  FAILED for ${NODE_HOSTNAME}. Trying alternative method..."
         # Alternative: manually append the key
         cat ~/.ssh/id_rsa.pub | sshpass -p "${PASSWORD}" ssh -o StrictHostKeyChecking=no -o PubkeyAuthentication=no ${USER}@${IP} "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-        echo "  ${HOSTNAME} done (alternative method)"
+        echo "  ${NODE_HOSTNAME} done (alternative method)"
     fi
 done
 
@@ -55,12 +55,12 @@ echo "[4/4] Testing SSH connectivity..."
 ALL_OK=true
 for i in "${!NODES[@]}"; do
     IP="${NODES[$i]}"
-    HOSTNAME="${HOSTNAMES[$i]}"
+    NODE_HOSTNAME="${HOSTNAMES[$i]}"
     RESULT=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${USER}@${IP} "hostname" 2>/dev/null)
-    if [ "$RESULT" = "$HOSTNAME" ]; then
-        echo "  ${HOSTNAME}: OK"
+    if [ "$RESULT" = "${NODE_HOSTNAME}" ]; then
+        echo "  ${NODE_HOSTNAME}: OK"
     else
-        echo "  ${HOSTNAME}: FAILED"
+        echo "  ${NODE_HOSTNAME}: FAILED"
         ALL_OK=false
     fi
 done

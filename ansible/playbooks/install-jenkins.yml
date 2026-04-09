@@ -13,8 +13,8 @@
     # ------------------------------------------------------------------
     # 1. Install Java 17 (required by Jenkins)
     # ------------------------------------------------------------------
-    - name: Install Java 17 JDK
-      apt:
+    - name: Install Java 17 JDK # note for me : upgrade for JDK 21 for long term support
+      apt: 
         name: openjdk-17-jdk
         state: present
         update_cache: yes
