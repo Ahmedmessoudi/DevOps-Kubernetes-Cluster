@@ -1,5 +1,9 @@
 ---
-
+# ==============================================================================
+# Playbook: join-workers.yml
+# Purpose: Join worker nodes to the Kubernetes cluster
+# Run: ansible-playbook playbooks/join-workers.yml
+# ==============================================================================
 
 - name: Get join command from master
   hosts: masters

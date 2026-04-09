@@ -1,5 +1,9 @@
 ---
-
+# ==============================================================================
+# Playbook: configure-kubectl-devops.yml
+# Purpose: Copy kubeconfig from master to devops so Jenkins can deploy to K8s
+# Run: ansible-playbook playbooks/configure-kubectl-devops.yml
+# ==============================================================================
 
 - name: Fetch kubeconfig from master
   hosts: masters

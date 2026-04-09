@@ -146,28 +146,28 @@ Now run the playbooks **in order**:
 
 ```bash
 # Step 1: Common prerequisites (swap, kernel modules, sysctl)
-ansible-playbook playbooks/common.yml
+ansible-playbook -i inventory/hosts.ini playbooks/common.yml
 
 # Step 2: Install containerd on all K8s nodes
-ansible-playbook playbooks/install-containerd.yml
+ansible-playbook -i inventory/hosts.ini playbooks/install-containerd.yml
 
 # Step 3: Install kubeadm, kubelet, kubectl
-ansible-playbook playbooks/install-kubernetes.yml
+ansible-playbook -i inventory/hosts.ini playbooks/install-kubernetes.yml
 
 # Step 4: Initialize the master node + install Calico CNI
-ansible-playbook playbooks/init-master.yml
+ansible-playbook -i inventory/hosts.ini playbooks/init-master.yml
 
 # Step 5: Join worker nodes to the cluster
-ansible-playbook playbooks/join-workers.yml
+ansible-playbook -i inventory/hosts.ini playbooks/join-workers.yml
 
 # Step 6: Install Jenkins + Docker + kubectl on DevOps
-ansible-playbook playbooks/install-jenkins.yml
+ansible-playbook -i inventory/hosts.ini playbooks/install-jenkins.yml
 
 # Step 7: Install Nexus Docker registry
-ansible-playbook playbooks/install-nexus.yml
+ansible-playbook -i inventory/hosts.ini playbooks/install-nexus.yml
 
 # Step 8: Copy kubeconfig to DevOps for kubectl access
-ansible-playbook playbooks/configure-kubectl-devops.yml
+ansible-playbook -i inventory/hosts.ini playbooks/configure-kubectl-devops.yml
 ```
 
 > **💡 Tip:** If a playbook fails, fix the issue and re-run it. Ansible playbooks are **idempotent** — running them again won't break anything.

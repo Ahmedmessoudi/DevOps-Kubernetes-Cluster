@@ -1,5 +1,9 @@
 ---
-
+# ==============================================================================
+# Playbook: install-kubernetes.yml
+# Purpose: Install kubeadm, kubelet, kubectl on all K8s nodes
+# Run: ansible-playbook playbooks/install-kubernetes.yml
+# ==============================================================================
 
 - name: Install Kubernetes components
   hosts: k8s_cluster

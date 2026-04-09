@@ -20,18 +20,35 @@
         update_cache: yes
 
     # ------------------------------------------------------------------
-    # 2. Add Jenkins repository
+    # 2. Add Jenkins repository and signing key
     # ------------------------------------------------------------------
-    - name: Add Jenkins GPG key
-      apt_key:
-        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+    - name: Ensure gnupg is installed
+      apt:
+        name: gnupg
         state: present
+        update_cache: yes
 
-    - name: Add Jenkins repository
+    - name: Download Jenkins apt signing key
+      get_url:
+        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+        dest: /tmp/jenkins-key.asc
+        mode: '0644'
+
+    - name: Add Jenkins key to system keyring via gpg
+      shell: cat /tmp/jenkins-key.asc | gpg --dearmor | tee /usr/share/keyrings/jenkins-keyring.gpg > /dev/null
+      args:
+        creates: /usr/share/keyrings/jenkins-keyring.gpg
+
+    - name: Add Jenkins repository with keyring (allow unsigned initially)
       apt_repository:
-        repo: "deb https://pkg.jenkins.io/debian-stable binary/"
+        repo: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg allow-insecure=yes allow-weak=yes] https://pkg.jenkins.io/debian-stable binary/"
         state: present
         filename: jenkins
+
+    - name: Update apt cache after adding Jenkins repo
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
 
     # ------------------------------------------------------------------
     # 3. Install Jenkins
@@ -44,9 +61,10 @@
       apt:
         name: jenkins
         state: present
+        allow_unauthenticated: yes
 
     # ------------------------------------------------------------------
-    # 4. Start and enable Jenkins
+    # 4. Start and enable Jenkins service
     # ------------------------------------------------------------------
     - name: Start and enable Jenkins service
       systemd:

@@ -1,4 +1,9 @@
 ---
+# ==============================================================================
+# Playbook: install-containerd.yml
+# Purpose: Install containerd as the container runtime on all K8s nodes
+# Run: ansible-playbook playbooks/install-containerd.yml
+# ==============================================================================
 
 - name: Install and configure containerd
   hosts: k8s_cluster

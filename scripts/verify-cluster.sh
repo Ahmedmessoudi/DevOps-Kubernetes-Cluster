@@ -1,3 +1,8 @@
+#!/bin/bash
+# ==============================================================================
+# Cluster Verification Script
+# Run this script from the MASTER node or DevOps machine (with kubectl configured)
+# ==============================================================================
 
 set -e
 

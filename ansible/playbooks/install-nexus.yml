@@ -1,5 +1,9 @@
 ---
-
+# ==============================================================================
+# Playbook: install-nexus.yml
+# Purpose: Install Nexus Repository Manager as Docker container on DevOps machine
+# Run: ansible-playbook playbooks/install-nexus.yml
+# ==============================================================================
 
 - name: Install Nexus Repository on DevOps machine
   hosts: devops
@@ -7,7 +11,48 @@
   tasks:
 
     # ------------------------------------------------------------------
-    # 1. Create Nexus data directory
+    # 0a. Sync system clock (fix certificate validation errors)
+    # ------------------------------------------------------------------
+    - name: Install NTP tools
+      apt:
+        name:
+          - chrony
+          - ntpdate
+        state: present
+        update_cache: no
+      ignore_errors: yes
+
+    - name: Synchronize system clock
+      command: ntpdate -u pool.ntp.org
+      ignore_errors: yes
+
+    - name: Set timezone to UTC
+      command: timedatectl set-timezone UTC
+      ignore_errors: yes
+
+    # ------------------------------------------------------------------
+    # 0. Wait for any existing apt operations to complete
+    # ------------------------------------------------------------------
+    - name: Wait for apt lock to be released
+      shell: while sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do sleep 1; done
+      timeout: 300
+
+    # ------------------------------------------------------------------
+    # 1. Install docker Python module (required for Ansible docker modules)
+    # ------------------------------------------------------------------
+    - name: Install pip3
+      apt:
+        name: python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Install Docker SDK for Python
+      pip:
+        name: docker
+        state: present
+
+    # ------------------------------------------------------------------
+    # 2. Create Nexus data directory
     # ------------------------------------------------------------------
     - name: Create Nexus data directory
       file:
@@ -18,7 +63,7 @@
         mode: '0755'
 
     # ------------------------------------------------------------------
-    # 2. Pull and run Nexus container
+    # 3. Pull and run Nexus container
     # ------------------------------------------------------------------
     - name: Pull Nexus Docker image
       docker_image:
@@ -82,16 +127,3 @@
              - Enable "Allow anonymous docker pull"
              - Click "Create repository"
           ============================================
-
-    # ------------------------------------------------------------------
-    # 5. Install docker Python module (required for Ansible docker modules)
-    # ------------------------------------------------------------------
-    - name: Install pip3
-      apt:
-        name: python3-pip
-        state: present
-
-    - name: Install Docker SDK for Python
-      pip:
-        name: docker
-        state: present
