@@ -541,6 +541,8 @@ curl http://192.168.56.12:30080
 | Docker login fails | Verify Nexus password is correct, check firewall on port 8082 |
 | Repository not listed | Create manually via Web UI: Settings → Repositories → Create Repository |
 | Push fails with 401 | Re-authenticate: `docker logout && docker login 192.168.56.20:8082` |
+| "http: server gave HTTP response to HTTPS client" | Docker is trying HTTPS but Nexus uses HTTP. Configure insecure registry: Edit `/etc/docker/daemon.json` and add `"insecure-registries": ["192.168.56.20:8082"]`, then `sudo systemctl restart docker` |
+| "connection refused" after Docker restart | Docker restart stops all containers. Restart Nexus: `docker start nexus && sleep 180` (wait 2-3 min for startup) |
 
 ### Jenkins Issues
 
