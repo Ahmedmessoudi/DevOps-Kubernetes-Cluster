@@ -1,11 +1,12 @@
 // ==============================================================================
 // Jenkinsfile - CI/CD Pipeline for Hello DevOps Application
 // ==============================================================================
+// This pipeline runs INSIDE a Kubernetes pod (Jenkins + DinD sidecar).
 // Pipeline stages:
 //   1. Checkout    - Pull source code from Git
 //   2. Install     - Install Node.js dependencies
 //   3. Test        - Run unit tests
-//   4. Build Image - Build Docker image
+//   4. Build Image - Build Docker image (via DinD sidecar)
 //   5. Push Image  - Push to Nexus Docker registry
 //   6. Deploy      - Deploy to Kubernetes cluster
 // ==============================================================================
@@ -21,8 +22,11 @@ pipeline {
         FULL_IMAGE     = "${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
         LATEST_IMAGE   = "${NEXUS_REGISTRY}/${IMAGE_NAME}:latest"
         
-        // Kubernetes
-        KUBE_CONFIG    = "/var/lib/jenkins/.kube/config"
+        // Kubernetes config (mounted via NFS)
+        KUBECONFIG     = "/var/jenkins_home/.kube/config"
+        
+        // Docker host (DinD sidecar running in same pod)
+        DOCKER_HOST    = "tcp://localhost:2375"
         
         // Nexus credentials (configure in Jenkins Credentials store)
         NEXUS_CREDS    = credentials('nexus-docker-credentials')
@@ -47,7 +51,18 @@ pipeline {
             steps {
                 echo 'Installing Node.js dependencies...'
                 dir('app') {
-                    sh 'npm install'
+                    sh '''
+                        # Install Node.js if not present (Jenkins LTS doesn't include it)
+                        if ! command -v node &> /dev/null; then
+                            echo "Installing Node.js..."
+                            apt-get update && apt-get install -y curl
+                            curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+                            apt-get install -y nodejs
+                        fi
+                        node --version
+                        npm --version
+                        npm install
+                    '''
                 }
             }
         }
@@ -70,13 +85,19 @@ pipeline {
         }
 
         // ============================================================
-        // Stage 4: Build Docker image
+        // Stage 4: Build Docker image (via DinD sidecar)
         // ============================================================
         stage('Build Docker Image') {
             steps {
                 echo "Building Docker image: ${FULL_IMAGE}"
                 dir('app') {
                     sh """
+                        # Wait for DinD sidecar to be ready
+                        until docker info > /dev/null 2>&1; do
+                            echo "Waiting for Docker daemon..."
+                            sleep 2
+                        done
+                        
                         docker build -t ${FULL_IMAGE} .
                         docker tag ${FULL_IMAGE} ${LATEST_IMAGE}
                     """
@@ -106,12 +127,12 @@ pipeline {
             steps {
                 echo 'Deploying to Kubernetes cluster...'
                 sh """
-                    export KUBECONFIG=${KUBE_CONFIG}
+                    export KUBECONFIG=${KUBECONFIG}
 
                     # Update the deployment image
-                    kubectl set image deployment/hello-devops \
-                        hello-devops=${FULL_IMAGE} \
-                        --record || \
+                    kubectl set image deployment/hello-devops \\
+                        hello-devops=${FULL_IMAGE} \\
+                        --record 2>/dev/null || \\
                     kubectl apply -f kubernetes/deployment.yml
 
                     # Apply the service (idempotent)

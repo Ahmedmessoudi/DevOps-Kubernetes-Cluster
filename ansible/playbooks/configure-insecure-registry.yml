@@ -1,0 +1,84 @@
+---
+# ==============================================================================
+# Playbook: configure-insecure-registry.yml
+# Purpose: Configure containerd on K8s workers to trust the Nexus registry
+# Run: ansible-playbook playbooks/configure-insecure-registry.yml
+# ==============================================================================
+# This ensures that:
+#   1. containerd on workers can pull images from Nexus (192.168.56.20:8082)
+#   2. Pods scheduled on workers can pull private images from Nexus
+# ==============================================================================
+
+- name: Configure Insecure Registry on K8s Nodes
+  hosts: k8s_cluster
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Check current containerd config
+    # ------------------------------------------------------------------
+    - name: Check if containerd config exists
+      stat:
+        path: /etc/containerd/config.toml
+      register: containerd_config
+
+    # ------------------------------------------------------------------
+    # 2. Add insecure registry configuration to containerd
+    # ------------------------------------------------------------------
+    - name: Check if Nexus registry already configured
+      shell: grep -c "192.168.56.20:8082" /etc/containerd/config.toml
+      register: registry_configured
+      ignore_errors: yes
+      changed_when: false
+      when: containerd_config.stat.exists
+
+    - name: Add Nexus insecure registry to containerd config
+      blockinfile:
+        path: /etc/containerd/config.toml
+        marker: "# {mark} NEXUS INSECURE REGISTRY"
+        block: |
+          [plugins."io.containerd.grpc.v1.cri".registry]
+            [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+              [plugins."io.containerd.grpc.v1.cri".registry.mirrors."192.168.56.20:8082"]
+                endpoint = ["http://192.168.56.20:8082"]
+            [plugins."io.containerd.grpc.v1.cri".registry.configs]
+              [plugins."io.containerd.grpc.v1.cri".registry.configs."192.168.56.20:8082".tls]
+                insecure_skip_verify = true
+      when:
+        - containerd_config.stat.exists
+        - registry_configured.stdout | default('0') | int == 0
+      notify: restart containerd
+
+    # ------------------------------------------------------------------
+    # 3. Create containerd hosts directory configuration (newer method)
+    # ------------------------------------------------------------------
+    - name: Create containerd hosts directory for Nexus
+      file:
+        path: /etc/containerd/certs.d/192.168.56.20:8082
+        state: directory
+        mode: '0755'
+
+    - name: Configure Nexus registry host
+      copy:
+        dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
+        content: |
+          server = "http://192.168.56.20:8082"
+
+          [host."http://192.168.56.20:8082"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+        mode: '0644'
+      notify: restart containerd
+
+    # ------------------------------------------------------------------
+    # 4. Verify configuration
+    # ------------------------------------------------------------------
+    - name: Display registry configuration status
+      debug:
+        msg: "Insecure registry configured for 192.168.56.20:8082 on {{ inventory_hostname }}"
+
+  handlers:
+    - name: restart containerd
+      systemd:
+        name: containerd
+        state: restarted

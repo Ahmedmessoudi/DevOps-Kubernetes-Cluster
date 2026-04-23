@@ -1,0 +1,79 @@
+---
+# ==============================================================================
+# Jenkins RBAC - ServiceAccount, ClusterRole, ClusterRoleBinding
+# Grants Jenkins pod permissions to manage K8s resources
+# ==============================================================================
+
+# 1. ServiceAccount for Jenkins
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins
+  namespace: jenkins
+  labels:
+    app: jenkins
+
+---
+# 2. ClusterRole with required permissions
+# Jenkins needs to manage deployments, services, pods, secrets
+# across all namespaces (to deploy apps to 'default' namespace)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jenkins-cluster-role
+  labels:
+    app: jenkins
+rules:
+  # Pod management (for Jenkins agents and app pods)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Service management
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Deployment management
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Secret management (for registry credentials)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # ConfigMap management
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespace listing
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Events (for debugging deployments)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # PersistentVolumeClaims
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Nodes (for kubectl get nodes)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+---
+# 3. ClusterRoleBinding - bind the role to the service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jenkins-cluster-role-binding
+  labels:
+    app: jenkins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jenkins-cluster-role
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins

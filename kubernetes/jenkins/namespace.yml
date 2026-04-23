@@ -1,0 +1,13 @@
+---
+# ==============================================================================
+# Jenkins Namespace
+# Isolates all Jenkins resources in a dedicated namespace
+# ==============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+  labels:
+    app: jenkins
+    purpose: ci-cd

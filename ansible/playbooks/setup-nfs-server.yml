@@ -1,0 +1,103 @@
+---
+# ==============================================================================
+# Playbook: setup-nfs-server.yml
+# Purpose: Install and configure NFS server on k8s-master
+# Run: ansible-playbook playbooks/setup-nfs-server.yml
+# ==============================================================================
+# Creates two NFS exports:
+#   /srv/nfs/jenkins  - Jenkins home directory (persistent storage)
+#   /srv/nfs/data     - General purpose shared storage
+# ==============================================================================
+
+- name: Setup NFS Server on Kubernetes Master
+  hosts: masters
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Install NFS server packages
+    # ------------------------------------------------------------------
+    - name: Install NFS server packages
+      apt:
+        name:
+          - nfs-kernel-server
+          - nfs-common
+        state: present
+        update_cache: yes
+
+    # ------------------------------------------------------------------
+    # 2. Create NFS export directories
+    # ------------------------------------------------------------------
+    - name: Create Jenkins NFS directory
+      file:
+        path: /srv/nfs/jenkins
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: '0755'
+        recurse: yes
+
+    - name: Create general data NFS directory
+      file:
+        path: /srv/nfs/data
+        state: directory
+        owner: nobody
+        group: nogroup
+        mode: '0777'
+        recurse: yes
+
+    # ------------------------------------------------------------------
+    # 3. Configure NFS exports
+    # ------------------------------------------------------------------
+    - name: Configure NFS exports
+      copy:
+        dest: /etc/exports
+        content: |
+          # NFS Exports for Kubernetes Cluster
+          # Jenkins home directory - accessible by all nodes in the subnet
+          /srv/nfs/jenkins  192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
+          # General purpose shared data
+          /srv/nfs/data     192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
+      notify: restart nfs
+
+    # ------------------------------------------------------------------
+    # 4. Export the NFS shares
+    # ------------------------------------------------------------------
+    - name: Export NFS shares
+      command: exportfs -rav
+      changed_when: true
+
+    # ------------------------------------------------------------------
+    # 5. Start and enable NFS server
+    # ------------------------------------------------------------------
+    - name: Start and enable NFS server
+      systemd:
+        name: nfs-kernel-server
+        state: started
+        enabled: yes
+
+    # ------------------------------------------------------------------
+    # 6. Verify exports
+    # ------------------------------------------------------------------
+    - name: Verify NFS exports
+      command: showmount -e localhost
+      register: nfs_exports
+
+    - name: Display NFS exports
+      debug:
+        msg: |
+          ============================================
+          NFS Server configured on k8s-master!
+          Exports:
+          {{ nfs_exports.stdout }}
+          ============================================
+          Clients can mount:
+            mount -t nfs 192.168.56.10:/srv/nfs/jenkins /mnt
+            mount -t nfs 192.168.56.10:/srv/nfs/data /mnt
+          ============================================
+
+  handlers:
+    - name: restart nfs
+      systemd:
+        name: nfs-kernel-server
+        state: restarted

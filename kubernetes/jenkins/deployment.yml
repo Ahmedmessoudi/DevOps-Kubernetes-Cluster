@@ -1,0 +1,117 @@
+---
+# ==============================================================================
+# Jenkins Deployment with Docker-in-Docker (DinD) Sidecar
+# Runs Jenkins controller as a pod on worker nodes
+# ==============================================================================
+# Architecture:
+#   - Jenkins container: CI/CD controller (UI + pipeline execution)
+#   - DinD sidecar: Docker daemon for building/pushing images
+#   - NFS volume: Persistent Jenkins home directory on k8s-master
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: jenkins
+  labels:
+    app: jenkins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      serviceAccountName: jenkins
+
+      # Schedule on worker nodes only (not master)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+
+      containers:
+        # ============================================================
+        # Jenkins Controller Container
+        # ============================================================
+        - name: jenkins
+          image: jenkins/jenkins:lts-jdk17
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: agent
+              containerPort: 50000
+          env:
+            # Tell Jenkins to use the DinD sidecar for Docker
+            - name: DOCKER_HOST
+              value: "tcp://localhost:2375"
+            # Java memory settings (conservative for 2GB worker)
+            - name: JAVA_OPTS
+              value: "-Xms256m -Xmx512m"
+          volumeMounts:
+            - name: jenkins-home
+              mountPath: /var/jenkins_home
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          # Liveness probe - Jenkins takes time to start
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          # Readiness probe
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+        # ============================================================
+        # Docker-in-Docker (DinD) Sidecar Container
+        # Provides a Docker daemon for Jenkins to build images
+        # ============================================================
+        - name: dind
+          image: docker:dind
+          securityContext:
+            privileged: true
+          env:
+            # Disable TLS for simplicity (internal pod communication)
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          volumeMounts:
+            - name: docker-storage
+              mountPath: /var/lib/docker
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+      volumes:
+        # Jenkins home directory - NFS backed for persistence
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-pvc
+        # Docker storage for DinD (ephemeral, lost on pod restart)
+        - name: docker-storage
+          emptyDir: {}

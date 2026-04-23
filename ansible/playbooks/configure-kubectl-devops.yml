@@ -1,8 +1,12 @@
 ---
 # ==============================================================================
 # Playbook: configure-kubectl-devops.yml
-# Purpose: Copy kubeconfig from master to devops so Jenkins can deploy to K8s
+# Purpose: Copy kubeconfig from master to devops machine and NFS Jenkins dir
 # Run: ansible-playbook playbooks/configure-kubectl-devops.yml
+# ==============================================================================
+# Configures kubectl access for:
+#   1. vagrant user on DevOps machine (manual cluster management)
+#   2. Jenkins pod via NFS mount (so Jenkins can deploy to K8s)
 # ==============================================================================
 
 - name: Fetch kubeconfig from master
@@ -18,7 +22,7 @@
       set_fact:
         kubeconfig_data: "{{ kubeconfig_content.content | b64decode }}"
 
-- name: Configure kubectl on DevOps machine
+- name: Configure kubectl on DevOps machine and NFS
   hosts: devops
   become: yes
   tasks:
@@ -43,26 +47,7 @@
         mode: '0600'
 
     # ------------------------------------------------------------------
-    # 2. Set up kubectl for jenkins user
-    # ------------------------------------------------------------------
-    - name: Create .kube directory for jenkins user
-      file:
-        path: /var/lib/jenkins/.kube
-        state: directory
-        owner: jenkins
-        group: jenkins
-        mode: '0755'
-
-    - name: Write kubeconfig for jenkins user
-      copy:
-        content: "{{ hostvars['k8s-master']['kubeconfig_data'] }}"
-        dest: /var/lib/jenkins/.kube/config
-        owner: jenkins
-        group: jenkins
-        mode: '0600'
-
-    # ------------------------------------------------------------------
-    # 3. Update kubeconfig to point to master's IP
+    # 2. Update kubeconfig to point to master's IP
     # ------------------------------------------------------------------
     - name: Update API server address in vagrant kubeconfig
       replace:
@@ -70,14 +55,8 @@
         regexp: 'server: https://[^:]+:6443'
         replace: 'server: https://192.168.56.10:6443'
 
-    - name: Update API server address in jenkins kubeconfig
-      replace:
-        path: /var/lib/jenkins/.kube/config
-        regexp: 'server: https://[^:]+:6443'
-        replace: 'server: https://192.168.56.10:6443'
-
     # ------------------------------------------------------------------
-    # 4. Verify kubectl access
+    # 3. Verify kubectl access
     # ------------------------------------------------------------------
     - name: Verify kubectl works from devops (vagrant)
       become_user: vagrant
@@ -89,3 +68,43 @@
       debug:
         msg: "{{ kubectl_output.stdout_lines }}"
       when: kubectl_output.rc == 0
+
+- name: Copy kubeconfig to NFS for Jenkins pod
+  hosts: masters
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 4. Set up kubectl config in NFS Jenkins directory
+    # ------------------------------------------------------------------
+    - name: Create .kube directory in NFS Jenkins home
+      file:
+        path: /srv/nfs/jenkins/.kube
+        state: directory
+        owner: "1000"
+        group: "1000"
+        mode: '0755'
+
+    - name: Write kubeconfig to NFS Jenkins home
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /srv/nfs/jenkins/.kube/config
+        remote_src: yes
+        owner: "1000"
+        group: "1000"
+        mode: '0600'
+
+    - name: Update API server address in Jenkins kubeconfig
+      replace:
+        path: /srv/nfs/jenkins/.kube/config
+        regexp: 'server: https://[^:]+:6443'
+        replace: 'server: https://192.168.56.10:6443'
+
+    - name: Display completion message
+      debug:
+        msg: |
+          ============================================
+          kubectl configured for:
+          - vagrant@devops: /home/vagrant/.kube/config
+          - Jenkins pod (NFS): /srv/nfs/jenkins/.kube/config
+          ============================================

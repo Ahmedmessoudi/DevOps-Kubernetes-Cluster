@@ -1,17 +1,21 @@
 ---
 # ==============================================================================
 # Playbook: install-jenkins.yml
-# Purpose: Install Jenkins on the DevOps machine
+# Purpose: Install Docker & kubectl on the DevOps machine
 # Run: ansible-playbook playbooks/install-jenkins.yml
 # ==============================================================================
+# NOTE: Jenkins is NO LONGER installed here. Jenkins now runs as a Kubernetes
+# pod on the worker nodes. This playbook only installs Docker (for Nexus and
+# manual image builds) and kubectl (for cluster management).
+# ==============================================================================
 
-- name: Install Jenkins on DevOps machine
+- name: Install Docker and kubectl on DevOps machine
   hosts: devops
   become: yes
   tasks:
 
     # ------------------------------------------------------------------
-    # 1. Install Java 17 (required by Jenkins)
+    # 1. Install Java 17 (may still be useful for tools)
     # ------------------------------------------------------------------
     - name: Install Java 17 JDK # note for me : upgrade for JDK 21 for long term support
       apt: 
@@ -20,60 +24,7 @@
         update_cache: yes
 
     # ------------------------------------------------------------------
-    # 2. Add Jenkins repository and signing key
-    # ------------------------------------------------------------------
-    - name: Ensure gnupg is installed
-      apt:
-        name: gnupg
-        state: present
-        update_cache: yes
-
-    - name: Download Jenkins apt signing key
-      get_url:
-        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-        dest: /tmp/jenkins-key.asc
-        mode: '0644'
-
-    - name: Add Jenkins key to system keyring via gpg
-      shell: cat /tmp/jenkins-key.asc | gpg --dearmor | tee /usr/share/keyrings/jenkins-keyring.gpg > /dev/null
-      args:
-        creates: /usr/share/keyrings/jenkins-keyring.gpg
-
-    - name: Add Jenkins repository with keyring (allow unsigned initially)
-      apt_repository:
-        repo: "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg allow-insecure=yes allow-weak=yes] https://pkg.jenkins.io/debian-stable binary/"
-        state: present
-        filename: jenkins
-
-    - name: Update apt cache after adding Jenkins repo
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
-
-    # ------------------------------------------------------------------
-    # 3. Install Jenkins
-    # ------------------------------------------------------------------
-    - name: Update apt cache
-      apt:
-        update_cache: yes
-
-    - name: Install Jenkins
-      apt:
-        name: jenkins
-        state: present
-        allow_unauthenticated: yes
-
-    # ------------------------------------------------------------------
-    # 4. Start and enable Jenkins service
-    # ------------------------------------------------------------------
-    - name: Start and enable Jenkins service
-      systemd:
-        name: jenkins
-        state: started
-        enabled: yes
-
-    # ------------------------------------------------------------------
-    # 5. Install Docker on DevOps (for building images)
+    # 2. Install Docker on DevOps (for building images & running Nexus)
     # ------------------------------------------------------------------
     - name: Add Docker GPG key
       apt_key:
@@ -102,21 +53,16 @@
         enabled: yes
 
     # ------------------------------------------------------------------
-    # 6. Add jenkins user to docker group
+    # 3. Add vagrant user to docker group
     # ------------------------------------------------------------------
-    - name: Add jenkins user to docker group
+    - name: Add vagrant user to docker group
       user:
-        name: jenkins
+        name: vagrant
         groups: docker
         append: yes
 
-    - name: Restart Jenkins to apply group changes
-      systemd:
-        name: jenkins
-        state: restarted
-
     # ------------------------------------------------------------------
-    # 7. Install kubectl on DevOps machine
+    # 4. Install kubectl on DevOps machine
     # ------------------------------------------------------------------
     - name: Download kubectl binary
       get_url:
@@ -125,7 +71,7 @@
         mode: '0755'
 
     # ------------------------------------------------------------------
-    # 8. Configure Docker to use Nexus as insecure registry
+    # 5. Configure Docker to use Nexus as insecure registry
     # ------------------------------------------------------------------
     - name: Create Docker daemon.json for insecure registry
       copy:
@@ -137,24 +83,20 @@
       notify: restart docker
 
     # ------------------------------------------------------------------
-    # 9. Display initial admin password
+    # 6. Display completion message
     # ------------------------------------------------------------------
-    - name: Wait for Jenkins to generate initial password
-      wait_for:
-        path: /var/lib/jenkins/secrets/initialAdminPassword
-        timeout: 120
-
-    - name: Get Jenkins initial admin password
-      command: cat /var/lib/jenkins/secrets/initialAdminPassword
-      register: jenkins_password
-
-    - name: Display Jenkins initial admin password
+    - name: Display setup information
       debug:
         msg: |
           ============================================
-          Jenkins Initial Admin Password:
-          {{ jenkins_password.stdout }}
-          Access Jenkins at: http://192.168.56.20:8080
+          DevOps machine setup complete!
+          - Docker installed and configured
+          - kubectl installed
+          - Insecure registry: 192.168.56.20:8082
+          ============================================
+          NOTE: Jenkins is NOT installed here.
+          Jenkins runs as a Kubernetes pod.
+          Access Jenkins at: http://<worker-ip>:32000
           ============================================
 
   handlers:

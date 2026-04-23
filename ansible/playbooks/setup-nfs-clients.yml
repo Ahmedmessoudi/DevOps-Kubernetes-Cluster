@@ -1,0 +1,39 @@
+---
+# ==============================================================================
+# Playbook: setup-nfs-clients.yml
+# Purpose: Install NFS client on worker nodes and DevOps machine
+# Run: ansible-playbook playbooks/setup-nfs-clients.yml
+# ==============================================================================
+# Workers need NFS client so Kubernetes can mount NFS PersistentVolumes.
+# DevOps needs it for optional manual mounting.
+# ==============================================================================
+
+- name: Setup NFS Clients on Worker Nodes and DevOps
+  hosts: workers:devops_servers
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Install NFS client packages
+    # ------------------------------------------------------------------
+    - name: Install NFS client packages
+      apt:
+        name:
+          - nfs-common
+        state: present
+        update_cache: yes
+
+    # ------------------------------------------------------------------
+    # 2. Test NFS connectivity to master
+    # ------------------------------------------------------------------
+    - name: Test NFS server reachability
+      command: showmount -e 192.168.56.10
+      register: nfs_test
+      ignore_errors: yes
+
+    - name: Display NFS test results
+      debug:
+        msg: |
+          NFS server exports visible from {{ inventory_hostname }}:
+          {{ nfs_test.stdout | default('Could not reach NFS server') }}
+      when: nfs_test is defined

@@ -1,7 +1,7 @@
-# Second Stage — Configure Nexus & Jenkins
+# Second Stage — NFS Storage, Nexus Registry & Jenkins on Kubernetes
 
-> **Goal:** Set up Nexus Docker Registry and Jenkins CI/CD pipeline on the DevOps machine.
-> These will be used to build, push, and deploy the sample application.
+> **Goal:** Set up NFS shared storage on the master node, configure the Nexus Docker Registry,
+> and deploy Jenkins as a Kubernetes pod on the worker nodes.
 
 ---
 
@@ -11,17 +11,122 @@ Before starting this stage, make sure:
 
 - [x] **First Stage** is complete:
   - Kubernetes cluster running with all 3 nodes **Ready**
-  - Sample nginx app deployed and tested
-- [x] **Ansible playbooks** executed:
-  - `install-jenkins.yml` — completed successfully
-  - `install-nexus.yml` — completed successfully
+  - Sample nginx app deployed and tested successfully
+- [x] **Ansible playbooks** executed (from Phase 3 in README):
+  - `common.yml` ✅
+  - `install-containerd.yml` ✅
+  - `install-kubernetes.yml` ✅
+  - `init-master.yml` ✅
+  - `join-workers.yml` ✅
 - [x] **DevOps machine** is accessible at `192.168.56.20`
+- [x] `kubectl get nodes` shows all 3 nodes as **Ready**
 
 ---
 
-## Part 1: Configure Nexus Docker Registry
+## Part 1: Set Up NFS Server on k8s-master
 
-### Step 1: Access Nexus Web UI
+NFS (Network File System) provides shared persistent storage for the Kubernetes cluster. We install the NFS server on `k8s-master` so that pods on any worker node can mount the same shared directories.
+
+### Step 1: Run the NFS Server Playbook
+
+From the **DevOps machine**:
+
+```bash
+# SSH into devops (from Windows PowerShell)
+vagrant ssh devops
+
+# Sync ansible files if needed
+sync-ansible
+
+# Run the NFS server playbook
+cd ~/ansible
+ansible-playbook -i inventory/hosts.ini playbooks/setup-nfs-server.yml
+```
+
+**What this does:**
+- Installs `nfs-kernel-server` on k8s-master
+- Creates two export directories:
+  - `/srv/nfs/jenkins` — persistent storage for Jenkins home directory
+  - `/srv/nfs/data` — general purpose shared storage for apps
+- Configures `/etc/exports` to allow access from the `192.168.56.0/24` subnet
+- Starts and enables the NFS service
+
+Expected output at the end:
+```
+TASK [Display NFS exports] ****************************************************
+ok: [k8s-master] => {
+    "msg": "NFS Server configured on k8s-master!\nExports:\n/srv/nfs/jenkins  192.168.56.0/24\n/srv/nfs/data     192.168.56.0/24\n"
+}
+```
+
+---
+
+### Step 2: Run the NFS Clients Playbook
+
+Still on the **DevOps machine**:
+
+```bash
+ansible-playbook -i inventory/hosts.ini playbooks/setup-nfs-clients.yml
+```
+
+**What this does:**
+- Installs `nfs-common` on both worker nodes and the DevOps VM
+- Tests connectivity to the NFS server on k8s-master
+
+Expected output:
+```
+TASK [Display NFS test results] ***********************************************
+ok: [k8s-worker1] => {
+    "msg": "NFS server exports visible from k8s-worker1:\n/srv/nfs/jenkins 192.168.56.0/24\n/srv/nfs/data    192.168.56.0/24\n"
+}
+ok: [k8s-worker2] => { ... }
+ok: [devops] => { ... }
+```
+
+---
+
+### Step 3: Verify NFS Manually (Optional)
+
+```bash
+# Test NFS from worker1
+ssh vagrant@k8s-worker1
+sudo mount -t nfs 192.168.56.10:/srv/nfs/data /mnt
+echo "NFS works!" | sudo tee /mnt/test.txt
+cat /mnt/test.txt
+sudo umount /mnt
+exit
+
+# Verify the file was created on master
+ssh vagrant@k8s-master
+cat /srv/nfs/data/test.txt
+# Should print: NFS works!
+sudo rm /srv/nfs/data/test.txt
+exit
+```
+
+✅ **NFS is ready!**
+
+---
+
+## Part 2: Configure Nexus Docker Registry
+
+### Step 1: Run the Nexus and Docker Playbooks
+
+From the **DevOps machine**:
+
+```bash
+# Install Docker & kubectl on DevOps
+ansible-playbook -i inventory/hosts.ini playbooks/install-jenkins.yml
+
+# Install Nexus
+ansible-playbook -i inventory/hosts.ini playbooks/install-nexus.yml
+```
+
+> **Note:** The `install-jenkins.yml` playbook now only installs Docker and kubectl on the DevOps machine. Jenkins itself is deployed as a Kubernetes pod (Part 3).
+
+---
+
+### Step 2: Access Nexus Web UI
 
 Open your browser and navigate to:
 
@@ -33,14 +138,11 @@ You should see the Nexus login page.
 
 ---
 
-### Step 2: Get Nexus Initial Admin Password
+### Step 3: Get Nexus Initial Admin Password
 
-SSH into the DevOps machine and retrieve the initial password:
+From your DevOps machine SSH session:
 
 ```bash
-# From your Windows host
-vagrant ssh devops
-
 # Get the admin password
 docker exec nexus cat /nexus-data/admin.password
 ```
@@ -49,11 +151,11 @@ docker exec nexus cat /nexus-data/admin.password
 
 ---
 
-### Step 3: Log In to Nexus
+### Step 4: Log In to Nexus
 
 1. On the login page, enter:
    - **Username:** `admin`
-   - **Password:** *(paste the password from Step 2)*
+   - **Password:** *(paste the password from Step 3)*
 
 2. Click **Sign in**
 
@@ -61,7 +163,7 @@ docker exec nexus cat /nexus-data/admin.password
 
 ---
 
-### Step 4: Change the Admin Password
+### Step 5: Change the Admin Password
 
 1. After login, click the **gear icon** (⚙️) in the top-right corner → **Account**
 
@@ -78,7 +180,7 @@ docker exec nexus cat /nexus-data/admin.password
 
 ---
 
-### Step 5: Create a Docker Hosted Repository
+### Step 6: Create a Docker Hosted Repository
 
 1. Click the **gear icon** (⚙️) → **Repositories**
 
@@ -102,7 +204,7 @@ Expected: You'll see `docker-hosted` in the Repositories list.
 
 ---
 
-### Step 6: Enable Docker Bearer Token Realm
+### Step 7: Enable Docker Bearer Token Realm
 
 1. Click **gear icon** (⚙️) → **Security** → **Realms**
 
@@ -116,15 +218,13 @@ Expected: `Docker Bearer Token Realm` now appears in the Active column.
 
 ---
 
-### Step 7: Test Docker Login
-
-SSH to the DevOps machine and test the Docker login:
+### Step 8: Test Docker Login
 
 ```bash
 # Still on devops VM
 docker logout 192.168.56.20:8082
 
-# Try to log in (use the new password from Step 4)
+# Try to log in (use the new password from Step 5)
 docker login 192.168.56.20:8082 -u admin -p admin123
 ```
 
@@ -133,13 +233,9 @@ Expected output:
 Login Succeeded
 ```
 
-If it fails, double-check the IP, port, and password.
-
 ---
 
-### Step 8: Verify Nexus is Ready
-
-Test pushing a tag to ensure the registry works:
+### Step 9: Verify Nexus — Push a Test Image
 
 ```bash
 # Pull a small test image
@@ -162,34 +258,143 @@ The push refers to repository [192.168.56.20:8082/hello-world]
 
 ---
 
-## Part 2: Configure Jenkins
+### Step 10: Configure Insecure Registry on K8s Workers
 
-### Step 1: Access Jenkins Web UI
+The Kubernetes workers use `containerd`, not Docker. We need to configure containerd to trust our Nexus registry so pods can pull images from it.
+
+```bash
+# On devops VM
+ansible-playbook -i inventory/hosts.ini playbooks/configure-insecure-registry.yml
+```
+
+**What this does:**
+- Configures `containerd` on all K8s nodes (master + workers) to accept images from `192.168.56.20:8082` over HTTP
+- Restarts containerd to apply the changes
+
+---
+
+## Part 3: Deploy Jenkins to Kubernetes
+
+Jenkins now runs as a **Kubernetes pod** on the worker nodes, with its home directory stored on the NFS server (k8s-master).
+
+### Step 1: Copy kubeconfig to NFS
+
+Jenkins needs `kubectl` access to deploy apps. We copy the kubeconfig into the NFS Jenkins directory:
+
+```bash
+# On devops VM
+ansible-playbook -i inventory/hosts.ini playbooks/configure-kubectl-devops.yml
+```
+
+**What this does:**
+- Copies kubeconfig to `/home/vagrant/.kube/config` on DevOps (for manual `kubectl`)
+- Copies kubeconfig to `/srv/nfs/jenkins/.kube/config` on k8s-master (for Jenkins pod)
+
+---
+
+### Step 2: Apply Jenkins Kubernetes Manifests
+
+From the **DevOps machine**:
+
+```bash
+# Apply all Jenkins manifests in order
+kubectl apply -f /vagrant/kubernetes/jenkins/namespace.yml
+kubectl apply -f /vagrant/kubernetes/jenkins/rbac.yml
+kubectl apply -f /vagrant/kubernetes/jenkins/nfs-pv-pvc.yml
+kubectl apply -f /vagrant/kubernetes/jenkins/deployment.yml
+kubectl apply -f /vagrant/kubernetes/jenkins/service.yml
+```
+
+**What each manifest does:**
+
+| File | Purpose |
+|---|---|
+| `namespace.yml` | Creates isolated `jenkins` namespace |
+| `rbac.yml` | ServiceAccount + ClusterRole for Jenkins pod to manage K8s resources |
+| `nfs-pv-pvc.yml` | PersistentVolume (NFS) + PersistentVolumeClaim for Jenkins home |
+| `deployment.yml` | Jenkins pod with Docker-in-Docker (DinD) sidecar |
+| `service.yml` | NodePort service (port 32000 for UI, 32001 for agents) |
+
+---
+
+### Step 3: Watch Jenkins Pod Start
+
+```bash
+# Watch the Jenkins pod start (press Ctrl+C to stop)
+kubectl get pods -n jenkins -w
+```
+
+Expected output (takes 2-5 minutes, Jenkins image is ~400MB):
+```
+NAME                       READY   STATUS              RESTARTS   AGE
+jenkins-xxxxxxxxx-xxxxx   0/2     ContainerCreating   0          10s
+jenkins-xxxxxxxxx-xxxxx   1/2     Running             0          90s
+jenkins-xxxxxxxxx-xxxxx   2/2     Running             0          120s
+```
+
+> **Important:** Wait until `READY` shows `2/2` (both Jenkins and DinD containers are ready).
+
+If the pod shows `Pending`, check:
+```bash
+kubectl describe pod -n jenkins -l app=jenkins
+kubectl get events -n jenkins --sort-by=.metadata.creationTimestamp
+```
+
+---
+
+### Step 4: Verify Jenkins PersistentVolume
+
+```bash
+# Check PV and PVC status
+kubectl get pv
+kubectl get pvc -n jenkins
+```
+
+Expected:
+```
+NAME         CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                STORAGECLASS   AGE
+jenkins-pv   5Gi        RWO            Retain           Bound    jenkins/jenkins-pvc                  2m
+
+NAME          STATUS   VOLUME       CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+jenkins-pvc   Bound    jenkins-pv   5Gi        RWO                           2m
+```
+
+Both should show `Bound` status.
+
+---
+
+### Step 5: Access Jenkins Web UI
 
 Open your browser and navigate to:
 
 ```
-http://192.168.56.20:8080
+http://192.168.56.11:32000
 ```
+
+Or:
+
+```
+http://192.168.56.12:32000
+```
+
+> Both URLs work because it's a NodePort service — Kubernetes routes the traffic to the Jenkins pod regardless of which worker node you use.
 
 You should see the Jenkins setup page.
 
 ---
 
-### Step 2: Get Jenkins Initial Admin Password
-
-From your DevOps machine SSH session:
+### Step 6: Get Jenkins Initial Admin Password
 
 ```bash
-# Get the admin password
-sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+# Get the password from the Jenkins pod
+kubectl exec -n jenkins $(kubectl get pod -n jenkins -l app=jenkins -o jsonpath='{.items[0].metadata.name}') -c jenkins -- cat /var/jenkins_home/secrets/initialAdminPassword
 ```
 
-**Copy this password**.
+**Copy this password.**
 
 ---
 
-### Step 3: Complete Jenkins Setup Wizard
+### Step 7: Complete Jenkins Setup Wizard
 
 1. Paste the initial password on the Jenkins page and click **Continue**
 
@@ -205,16 +410,16 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 4. Click **Save and Continue**
 
 5. On the **Jenkins URL** page:
-   - **Jenkins URL:** `http://192.168.56.20:8080/`
+   - **Jenkins URL:** `http://192.168.56.11:32000/`
    - Click **Save and Finish**
 
 6. Click **Start using Jenkins**
 
-✅ **Jenkins is ready!**
+✅ **Jenkins is running as a Kubernetes pod!**
 
 ---
 
-### Step 4: Install Required Plugins
+### Step 8: Install Required Plugins
 
 1. Click **Manage Jenkins** (left menu) → **Manage Plugins**
 
@@ -222,8 +427,6 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 
 3. Search for and install these plugins:
    - **Docker Pipeline**
-   - **NodeJS Plugin**
-   - **Kubernetes CLI**
    - **Git Parameter**
 
 4. For each plugin:
@@ -234,7 +437,7 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 
 ---
 
-### Step 5: Add Nexus Docker Credentials to Jenkins
+### Step 9: Add Nexus Docker Credentials
 
 1. Click **Manage Jenkins** → **Credentials** → **Global** (or System)
 
@@ -244,7 +447,7 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
    - **Kind:** `Username with password`
    - **Scope:** `Global (Jenkins, nodes, items, all child items, etc.)`
    - **Username:** `admin`
-   - **Password:** `admin123` *(the Nexus password from Part 1, Step 4)*
+   - **Password:** `admin123` *(the Nexus password from Part 2, Step 5)*
    - **ID:** `nexus-docker-credentials`
    - **Description:** `Nexus Docker Registry Credentials`
 
@@ -252,353 +455,164 @@ sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 
 ---
 
-### Step 6: Configure NodeJS Tool
+### Step 10: Create a Test Pipeline
 
-1. Click **Manage Jenkins** → **Tools**
-
-2. Scroll down to **NodeJS installations** section
-
-3. Click **Add NodeJS**
-
-4. Configure:
-   - **Name:** `nodejs-18`
-   - **Version:** `NodeJS 18.x` *(select from dropdown)*
-   - **Install automatically:** ✅ checked
-
-5. Click **Save**
-
----
-
-### Step 7: Create a Test Pipeline Job
-
-Let's create a simple test job to verify Jenkins can run builds:
-
-1. Click **+ New Item** (left menu)
-
-2. Enter name: `test-pipeline`
-
-3. Select **Pipeline**
-
-4. Click **OK**
-
-5. Under **Pipeline**, select:
-   - **Definition:** `Pipeline script`
-
-6. Paste this script in the **Script** box:
-
-```groovy
-pipeline {
-    agent any
-    
-    stages {
-        stage('Hello') {
-            steps {
-                echo 'Hello, DevOps World!'
-                sh 'whoami'
-                sh 'pwd'
-            }
-        }
-        
-        stage('NodeJS Check') {
-            steps {
-                sh 'node --version'
-                sh 'npm --version'
-            }
-        }
-        
-        stage('Docker Check') {
-            steps {
-                sh 'docker --version'
-                sh 'docker ps'
-            }
-        }
-    }
-}
-```
-
-7. Click **Save**
-
-8. Click **Build Now** (left menu)
-
-9. Watch the build execute — click the build number to see logs
-
-Expected output includes:
-- `Hello, DevOps World!`
-- `node version: v18.x.x`
-- `npm version: 9.x.x`
-- Docker container list
-
-✅ **Jenkins pipeline works!**
-
----
-
-### Step 8: Create the Hello-DevOps Pipeline Job
-
-Now create the main job for our sample app:
+Verify Jenkins can build Docker images via the DinD sidecar:
 
 1. Click **+ New Item**
 
-2. Name: `hello-devops-pipeline`
+2. Name: `test-pipeline`
 
 3. Select **Pipeline**
 
 4. Click **OK**
 
-5. Under **General**, check **GitHub project** (or leave unchecked for now)
-
-6. Under **Pipeline**:
-   - **Definition:** `Pipeline script`
-   - Paste this script:
+5. Under **Pipeline**, select **Pipeline script** and paste:
 
 ```groovy
 pipeline {
     agent any
     
     environment {
-        REGISTRY = '192.168.56.20:8082'
-        REGISTRY_CREDS = credentials('nexus-docker-credentials')
-        IMAGE_NAME = "${REGISTRY}/hello-devops"
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        KUBECONFIG = '/var/lib/jenkins/.kube/config'
+        DOCKER_HOST = "tcp://localhost:2375"
     }
     
     stages {
-        stage('Checkout') {
+        stage('Hello') {
             steps {
-                echo 'Checking out source code...'
-                // For now, just use /vagrant/app
-                sh 'ls -la /vagrant/app/'
+                echo 'Hello from Jenkins running in Kubernetes!'
+                sh 'whoami'
+                sh 'hostname'
             }
         }
         
-        stage('Build Image') {
+        stage('Docker Check') {
             steps {
-                echo "Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG}"
                 sh '''
-                    cd /vagrant/app
-                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest
+                    until docker info > /dev/null 2>&1; do
+                        echo "Waiting for Docker..."
+                        sleep 2
+                    done
+                    docker --version
+                    docker ps
                 '''
             }
         }
         
-        stage('Login to Registry') {
+        stage('Kubectl Check') {
             steps {
-                echo 'Logging in to Nexus registry...'
                 sh '''
-                    echo "${REGISTRY_CREDS_PSW}" | docker login -u "${REGISTRY_CREDS_USR}" --password-stdin ${REGISTRY}
+                    kubectl version --client
+                    kubectl get nodes
                 '''
             }
-        }
-        
-        stage('Push Image') {
-            steps {
-                echo "Pushing image to: ${IMAGE_NAME}:${IMAGE_TAG}"
-                sh '''
-                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                    docker push ${IMAGE_NAME}:latest
-                '''
-            }
-        }
-        
-        stage('Deploy to Kubernetes') {
-            steps {
-                echo 'Deploying to Kubernetes...'
-                sh '''
-                    cd /vagrant/kubernetes
-                    
-                    # Create namespace if not exists
-                    kubectl create namespace default 2>/dev/null || true
-                    
-                    # Create/update secret for Nexus
-                    kubectl delete secret nexus-registry-secret 2>/dev/null || true
-                    kubectl create secret docker-registry nexus-registry-secret \
-                        --docker-server=192.168.56.20:8082 \
-                        --docker-username=admin \
-                        --docker-password=admin123 \
-                        --docker-email=admin@example.com
-                    
-                    # Apply deployment and service
-                    sed "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g" deployment.yml | kubectl apply -f -
-                    kubectl apply -f service.yml
-                    
-                    # Wait for pods to be ready
-                    kubectl rollout status deployment/hello-devops --timeout=5m
-                '''
-            }
-        }
-        
-        stage('Verify Deployment') {
-            steps {
-                echo 'Verifying deployment...'
-                sh '''
-                    echo "Pods:"
-                    kubectl get pods -l app=hello-devops
-                    
-                    echo "Service:"
-                    kubectl get svc hello-devops-service
-                    
-                    echo "Testing endpoints..."
-                    sleep 10
-                    curl http://192.168.56.11:30080 || true
-                '''
-            }
-        }
-    }
-    
-    post {
-        always {
-            echo 'Pipeline complete!'
-        }
-        
-        failure {
-            echo 'Pipeline failed!'
         }
     }
 }
 ```
 
-7. Click **Save**
+6. Click **Save**, then **Build Now**
 
-8. Click **Build Now** to test
+7. Watch the build — it should:
+   - Print the pod hostname (proving it runs in K8s)
+   - Show Docker is available (via DinD sidecar)
+   - Show `kubectl` can see the cluster nodes
 
-Watch the build logs. It should:
-- Build the Docker image
-- Push to Nexus
-- Deploy to Kubernetes
-- Verify the pods are running
+✅ **Jenkins pipeline works inside Kubernetes!**
 
 ---
 
-## Part 3: Verification Checklist
+## Part 4: Verification Checklist
 
-Run these checks to verify everything is configured:
+### NFS Checks
+
+```bash
+# ✅ 1. NFS server is running on master
+ssh vagrant@k8s-master "systemctl status nfs-kernel-server | head -5"
+
+# ✅ 2. Exports are configured
+ssh vagrant@k8s-master "showmount -e localhost"
+
+# ✅ 3. NFS is accessible from workers
+ssh vagrant@k8s-worker1 "showmount -e 192.168.56.10"
+```
 
 ### Nexus Checks
 
 ```bash
 # From the DevOps machine
 # ✅ 1. Docker login works
-docker logout 192.168.56.20:8082
 docker login 192.168.56.20:8082 -u admin -p admin123
-# Expected: "Login Succeeded"
 
-# ✅ 2. Image was pushed
-curl -u admin:admin123 http://192.168.56.20:8081/service/rest/v1/repositories
-# Should show "docker-hosted" repository
-
-# ✅ 3. Pull the test image from Nexus
-docker pull 192.168.56.20:8082/hello-world:latest
+# ✅ 2. Nexus Web UI accessible
+curl -s -o /dev/null -w "%{http_code}" http://192.168.56.20:8081
+# Expected: 200
 ```
 
 ### Jenkins Checks
 
 ```bash
-# ✅ 1. Jenkins is accessible
-curl -s -o /dev/null -w "%{http_code}" http://192.168.56.20:8080
+# ✅ 1. Jenkins pod is running (2/2 containers)
+kubectl get pods -n jenkins
+
+# ✅ 2. Jenkins PVC is bound
+kubectl get pvc -n jenkins
+
+# ✅ 3. Jenkins Web UI accessible
+curl -s -o /dev/null -w "%{http_code}" http://192.168.56.11:32000
 # Expected: 200
 
-# ✅ 2. Jenkins has NodeJS installed
-# Check in Jenkins UI: Manage Jenkins → Tools → NodeJS installations
-# Should show "nodejs-18"
-
-# ✅ 3. Credentials are configured
-# Check in Jenkins UI: Manage Jenkins → Credentials → Global
-# Should show "nexus-docker-credentials"
-```
-
-### Complete Integration Test
-
-```bash
-# From devops machine
-# ✅ 1. Check Kubernetes cluster
-kubectl get nodes
-# All 3 nodes should be Ready
-
-# ✅ 2. Trigger the hello-devops-pipeline job
-# Go to Jenkins UI → hello-devops-pipeline → Build Now
-# Wait for build to complete
-
-# ✅ 3. Verify app is deployed
-kubectl get pods -l app=hello-devops
-# Should show 2 pods, both Running
-
-# ✅ 4. Test the app endpoints
-curl http://192.168.56.11:30080
-curl http://192.168.56.12:30080
-# Should return JSON response with "Hello DevOps! 🚀"
+# ✅ 4. Test pipeline passed
+# Check in Jenkins UI: test-pipeline → last build → SUCCESS
 ```
 
 ---
 
 ## Troubleshooting
 
-### Nexus Issues
+### NFS Issues
 
 | Problem | Solution |
 |---|---|
-| Can't access Nexus Web UI | Check if Docker container is running: `docker ps \| grep nexus` |
-| Docker login fails | Verify Nexus password is correct, check firewall on port 8082 |
-| Repository not listed | Create manually via Web UI: Settings → Repositories → Create Repository |
-| Push fails with 401 | Re-authenticate: `docker logout && docker login 192.168.56.20:8082` |
-| "http: server gave HTTP response to HTTPS client" | Docker is trying HTTPS but Nexus uses HTTP. Configure insecure registry: Edit `/etc/docker/daemon.json` and add `"insecure-registries": ["192.168.56.20:8082"]`, then `sudo systemctl restart docker` |
-| "connection refused" after Docker restart | Docker restart stops all containers. Restart Nexus: `docker start nexus && sleep 180` (wait 2-3 min for startup) |
+| `showmount` fails | Check NFS server: `ssh k8s-master "systemctl status nfs-kernel-server"` |
+| PVC stays `Pending` | Check NFS client installed on workers: `ssh k8s-worker1 "dpkg -l nfs-common"` |
+| Permission denied on NFS mount | Check `/etc/exports` uses `no_root_squash` |
 
-### Jenkins Issues
+### Jenkins Pod Issues
 
 | Problem | Solution |
 |---|---|
-| Can't access Jenkins Web UI | Check if service is running: `sudo systemctl status jenkins` |
-| Plugins won't install | Check internet connectivity, try installing one at a time |
-| Docker push fails in pipeline | Verify credentials ID is correct (`nexus-docker-credentials`) |
-| Kubernetes deployment fails | Check `kubectl get events` for error details on master node |
-| Permission denied errors | Run: `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins` |
+| Pod stuck in `Pending` | Check resources: `kubectl describe pod -n jenkins -l app=jenkins` |
+| Pod in `CrashLoopBackOff` | Check logs: `kubectl logs -n jenkins -l app=jenkins -c jenkins` |
+| DinD sidecar won't start | Check: `kubectl logs -n jenkins -l app=jenkins -c dind` |
+| Can't access Jenkins UI | Verify service: `kubectl get svc -n jenkins` |
+| `ImagePullBackOff` | Check internet: `ssh k8s-worker1 "ping -c 2 8.8.8.8"` |
 
-### Image Pull Errors in Kubernetes
+### Jenkins Pipeline Issues
 
-If pods show `ImagePullBackOff`:
-
-```bash
-# On the devops machine
-# 1. Verify the image exists in Nexus
-docker pull 192.168.56.20:8082/hello-devops:latest
-
-# 2. Verify the secret is created
-kubectl get secrets
-# Should show: nexus-registry-secret
-
-# 3. Check pod events
-kubectl describe pod <pod-name>
-# Look for error messages
-
-# 4. Verify containerd insecure registry config
-ssh vagrant@k8s-worker1
-sudoedit /etc/containerd/config.toml
-# Check for: [plugins."io.containerd.grpc.v1.cri".registry.configs."192.168.56.20:8082"]
-
-# 5. Restart containerd if config changed
-sudo systemctl restart containerd
-```
+| Problem | Solution |
+|---|---|
+| `docker: command not found` | Install docker CLI in pipeline: `apt-get update && apt-get install -y docker.io` |
+| `Cannot connect to Docker daemon` | Verify DinD sidecar: `kubectl logs -n jenkins -l app=jenkins -c dind` |
+| `kubectl: command not found` | The kubeconfig must exist at `/var/jenkins_home/.kube/config` — re-run `configure-kubectl-devops.yml` |
+| Docker push to Nexus fails | Verify credentials ID is `nexus-docker-credentials` |
 
 ---
 
 ## Next Steps
 
-Once this stage is complete, you're ready for:
+Once this stage is complete, proceed to:
 
-- **Third Stage:** Build and test Docker images independently
-- **Fourth Stage:** Automate everything with Jenkins CI/CD pipeline
-- **Fifth Stage:** Monitor and scale the application in Kubernetes
+- **Third Stage:** Deploy the Hello World microservice (build, push, deploy, automate with Jenkins)
 
 ---
 
 ## Summary of Credentials
 
-Keep these safe — you'll need them throughout the project:
-
 | Service | URL | Username | Password |
 |---|---|---|---|
-| Nexus | `http://192.168.56.20:8081` | `admin` | `admin123` |
-| Jenkins | `http://192.168.56.20:8080` | `admin` | `admin123` |
+| Nexus Web UI | `http://192.168.56.20:8081` | `admin` | `admin123` |
 | Docker Registry | `192.168.56.20:8082` | `admin` | `admin123` |
-| Kubernetes | Command-line (kubectl) | (certificate-based) | N/A |
+| Jenkins | `http://192.168.56.11:32000` | `admin` | `admin123` |
+| Kubernetes | `kubectl` (kubeconfig) | (certificate-based) | N/A |
+| NFS Server | `192.168.56.10:/srv/nfs/*` | N/A | N/A |
