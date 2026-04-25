@@ -1,0 +1,42 @@
+---
+# ==============================================================================
+# PostgreSQL NFS PersistentVolume and PersistentVolumeClaim
+# Provides persistent storage for PostgreSQL data via NFS on k8s-master
+# ==============================================================================
+
+# 1. PersistentVolume — NFS-backed on k8s-master
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-pv
+  labels:
+    app: postgres
+    type: nfs
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 192.168.56.10
+    path: /srv/nfs/postgres
+
+---
+# 2. PersistentVolumeClaim — used by PostgreSQL Deployment
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: fullstack
+  labels:
+    app: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  selector:
+    matchLabels:
+      type: nfs

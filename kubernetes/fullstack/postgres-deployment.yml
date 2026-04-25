@@ -1,0 +1,50 @@
+---
+# ==============================================================================
+# PostgreSQL Deployment — fullstack namespace
+# Single replica with NFS-backed persistent storage
+# Credentials stored in environment variables (use K8s Secret in production)
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: fullstack
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "formdb"
+            - name: POSTGRES_USER
+              value: "formuser"
+            - name: POSTGRES_PASSWORD
+              value: "formpassword"
+          volumeMounts:
+            - name: pg-storage
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "300m"
+      volumes:
+        - name: pg-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc

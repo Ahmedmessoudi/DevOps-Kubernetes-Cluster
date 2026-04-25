@@ -1,0 +1,75 @@
+---
+# ==============================================================================
+# Playbook: setup-nfs-postgres.yml
+# Purpose: Create PostgreSQL NFS directory and add to NFS exports on k8s-master
+# Run: ansible-playbook playbooks/setup-nfs-postgres.yml
+# ==============================================================================
+# Adds /srv/nfs/postgres to NFS exports so PostgreSQL pods in the fullstack
+# namespace can persist data across pod restarts via PV/PVC.
+# ==============================================================================
+
+- name: Setup NFS directory for PostgreSQL on Kubernetes Master
+  hosts: masters
+  become: yes
+  tasks:
+
+    # ------------------------------------------------------------------
+    # 1. Create PostgreSQL NFS directory
+    # ------------------------------------------------------------------
+    - name: Create PostgreSQL NFS directory
+      file:
+        path: /srv/nfs/postgres
+        state: directory
+        owner: "70"        # PostgreSQL runs as UID 70 in postgres:15-alpine
+        group: "70"
+        mode: '0700'
+        recurse: yes
+
+    # ------------------------------------------------------------------
+    # 2. Add PostgreSQL export to /etc/exports (idempotent)
+    # ------------------------------------------------------------------
+    - name: Check if PostgreSQL export already exists
+      command: grep -q '/srv/nfs/postgres' /etc/exports
+      register: export_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Add PostgreSQL NFS export
+      lineinfile:
+        path: /etc/exports
+        line: "/srv/nfs/postgres  192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)"
+        state: present
+      when: export_check.rc != 0
+      notify: restart nfs
+
+    # ------------------------------------------------------------------
+    # 3. Re-export all NFS shares
+    # ------------------------------------------------------------------
+    - name: Export NFS shares
+      command: exportfs -rav
+      changed_when: true
+
+    # ------------------------------------------------------------------
+    # 4. Verify exports
+    # ------------------------------------------------------------------
+    - name: Verify NFS exports
+      command: showmount -e localhost
+      register: nfs_exports
+
+    - name: Display NFS exports
+      debug:
+        msg: |
+          ============================================
+          PostgreSQL NFS directory configured!
+          Exports:
+          {{ nfs_exports.stdout }}
+          ============================================
+          New mount point available:
+            mount -t nfs 192.168.56.10:/srv/nfs/postgres /mnt
+          ============================================
+
+  handlers:
+    - name: restart nfs
+      systemd:
+        name: nfs-kernel-server
+        state: restarted

@@ -1,0 +1,13 @@
+---
+# ==============================================================================
+# Kubernetes Namespace — fullstack
+# Isolates all Task Manager resources from other workloads
+# ==============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fullstack
+  labels:
+    app: task-manager
+    project: fullstack

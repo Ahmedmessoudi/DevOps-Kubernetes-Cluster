@@ -1,0 +1,55 @@
+# ==============================================================================
+# Docker Compose — Contact Form App (Local Development)
+# ==============================================================================
+# Brings up all 3 services for local testing:
+#   - Frontend (Nginx)       → http://localhost:8080
+#   - Backend  (Express.js)  → http://localhost:5000
+#   - PostgreSQL             → localhost:5432
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # --- PostgreSQL ------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: formapp-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB:       formdb
+      POSTGRES_USER:     formuser
+      POSTGRES_PASSWORD: formpassword
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # --- Backend (Express API) -------------------------------------------------
+  backend:
+    build: ./backend
+    container_name: formapp-backend
+    ports:
+      - "5000:5000"
+    environment:
+      PG_HOST:     postgres
+      PG_PORT:     "5432"
+      PG_DB:       formdb
+      PG_USER:     formuser
+      PG_PASSWORD: formpassword
+      PORT:        "5000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # --- Frontend (Nginx) ------------------------------------------------------
+  frontend:
+    build: ./frontend
+    container_name: formapp-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pg-data:

@@ -1,0 +1,62 @@
+---
+# ==============================================================================
+# Backend Deployment — fullstack namespace
+# Express.js API, 2 replicas, pulls image from Nexus registry
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: fullstack
+  labels:
+    app: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: 192.168.56.20:8082/fullstack-backend:latest
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PG_HOST
+              value: "postgres-service"
+            - name: PG_PORT
+              value: "5432"
+            - name: PG_DB
+              value: "formdb"
+            - name: PG_USER
+              value: "formuser"
+            - name: PG_PASSWORD
+              value: "formpassword"
+            - name: PORT
+              value: "5000"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      imagePullSecrets:
+        - name: nexus-registry-secret

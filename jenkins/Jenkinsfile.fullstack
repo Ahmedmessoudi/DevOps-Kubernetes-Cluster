@@ -1,0 +1,200 @@
+// ==============================================================================
+// Jenkinsfile.fullstack — CI/CD Pipeline for Contact Form App
+// ==============================================================================
+// This pipeline runs INSIDE a Kubernetes pod (Jenkins + DinD sidecar).
+// Pipeline stages:
+//   1. Checkout       - Pull source code from Gitea
+//   2. Build Backend  - Build backend Docker image (via DinD sidecar)
+//   3. Build Frontend - Build frontend Docker image
+//   4. Push Images    - Push both images to Nexus Docker registry
+//   5. Deploy         - Deploy all K8s manifests to the fullstack namespace
+// ==============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        // Nexus Docker Registry
+        NEXUS_REGISTRY    = "192.168.56.20:8082"
+        BACKEND_IMAGE     = "fullstack-backend"
+        FRONTEND_IMAGE    = "fullstack-frontend"
+        IMAGE_TAG         = "${BUILD_NUMBER}"
+
+        // Full image references
+        BACKEND_FULL      = "${NEXUS_REGISTRY}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+        BACKEND_LATEST    = "${NEXUS_REGISTRY}/${BACKEND_IMAGE}:latest"
+        FRONTEND_FULL     = "${NEXUS_REGISTRY}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+        FRONTEND_LATEST   = "${NEXUS_REGISTRY}/${FRONTEND_IMAGE}:latest"
+
+        // Kubernetes config (mounted via NFS)
+        KUBECONFIG        = "/var/jenkins_home/.kube/config"
+
+        // Docker host (DinD sidecar running in same pod)
+        DOCKER_HOST       = "tcp://localhost:2375"
+
+        // Nexus credentials (configure in Jenkins Credentials store)
+        NEXUS_CREDS       = credentials('nexus-docker-credentials')
+    }
+
+    stages {
+
+        // ============================================================
+        // Stage 1: Checkout source code from Gitea
+        // ============================================================
+        stage('Checkout') {
+            steps {
+                echo 'Pulling source code from Gitea...'
+                checkout scm
+            }
+        }
+
+        // ============================================================
+        // Stage 2: Build Backend Docker Image
+        // ============================================================
+        stage('Build Backend Image') {
+            steps {
+                echo "Building backend image: ${BACKEND_FULL}"
+                dir('fullstack-app/backend') {
+                    sh """
+                        # Wait for DinD sidecar to be ready
+                        until docker info > /dev/null 2>&1; do
+                            echo "Waiting for Docker daemon..."
+                            sleep 2
+                        done
+
+                        docker build -t ${BACKEND_FULL} .
+                        docker tag ${BACKEND_FULL} ${BACKEND_LATEST}
+                    """
+                }
+            }
+        }
+
+        // ============================================================
+        // Stage 3: Build Frontend Docker Image
+        // ============================================================
+        stage('Build Frontend Image') {
+            steps {
+                echo "Building frontend image: ${FRONTEND_FULL}"
+                dir('fullstack-app/frontend') {
+                    sh """
+                        docker build -t ${FRONTEND_FULL} .
+                        docker tag ${FRONTEND_FULL} ${FRONTEND_LATEST}
+                    """
+                }
+            }
+        }
+
+        // ============================================================
+        // Stage 4: Push Images to Nexus Registry
+        // ============================================================
+        stage('Push to Nexus') {
+            steps {
+                echo "Pushing images to Nexus registry..."
+                sh """
+                    echo ${NEXUS_CREDS_PSW} | docker login ${NEXUS_REGISTRY} -u ${NEXUS_CREDS_USR} --password-stdin
+
+                    # Push backend
+                    docker push ${BACKEND_FULL}
+                    docker push ${BACKEND_LATEST}
+
+                    # Push frontend
+                    docker push ${FRONTEND_FULL}
+                    docker push ${FRONTEND_LATEST}
+
+                    docker logout ${NEXUS_REGISTRY}
+                """
+            }
+        }
+
+        // ============================================================
+        // Stage 5: Deploy to Kubernetes (fullstack namespace)
+        // ============================================================
+        stage('Deploy to Kubernetes') {
+            steps {
+                echo 'Deploying full-stack app to Kubernetes...'
+                sh """
+                    export KUBECONFIG=${KUBECONFIG}
+
+                    # Create namespace (idempotent)
+                    kubectl apply -f kubernetes/fullstack/namespace.yml
+
+                    # Create Nexus registry secret in fullstack namespace (if not exists)
+                    kubectl get secret nexus-registry-secret -n fullstack > /dev/null 2>&1 || \\
+                    kubectl create secret docker-registry nexus-registry-secret \\
+                        --docker-server=${NEXUS_REGISTRY} \\
+                        --docker-username=${NEXUS_CREDS_USR} \\
+                        --docker-password=${NEXUS_CREDS_PSW} \\
+                        --docker-email=admin@example.com \\
+                        -n fullstack
+
+                    # Deploy PostgreSQL (storage + deployment + service)
+                    kubectl apply -f kubernetes/fullstack/postgres-nfs-pv-pvc.yml
+                    kubectl apply -f kubernetes/fullstack/postgres-deployment.yml
+                    kubectl apply -f kubernetes/fullstack/postgres-service.yml
+
+                    # Wait for PostgreSQL to be ready
+                    kubectl rollout status deployment/postgres -n fullstack --timeout=120s
+
+                    # Deploy Backend
+                    kubectl apply -f kubernetes/fullstack/backend-deployment.yml
+                    kubectl apply -f kubernetes/fullstack/backend-service.yml
+
+                    # Update backend image to this build
+                    kubectl set image deployment/backend \\
+                        backend=${BACKEND_FULL} \\
+                        -n fullstack
+
+                    # Deploy Frontend
+                    kubectl apply -f kubernetes/fullstack/frontend-deployment.yml
+                    kubectl apply -f kubernetes/fullstack/frontend-service.yml
+
+                    # Update frontend image to this build
+                    kubectl set image deployment/frontend \\
+                        frontend=${FRONTEND_FULL} \\
+                        -n fullstack
+
+                    # Wait for rollouts
+                    kubectl rollout status deployment/backend  -n fullstack --timeout=120s
+                    kubectl rollout status deployment/frontend -n fullstack --timeout=120s
+
+                    echo '============================================'
+                    echo 'Deployment complete! Resources:'
+                    echo '============================================'
+                    kubectl get all -n fullstack
+                """
+            }
+        }
+    }
+
+    // ============================================================
+    // Post-pipeline actions
+    // ============================================================
+    post {
+        success {
+            echo '''
+            ✅ ============================================
+            ✅ Full-Stack Pipeline completed successfully!
+            ✅ Contact Form App deployed to Kubernetes.
+            ✅ Access at: http://<node-ip>:30090
+            ✅ ============================================
+            '''
+        }
+        failure {
+            echo '''
+            ❌ ============================================
+            ❌ Full-Stack Pipeline FAILED!
+            ❌ Check the logs above for details.
+            ❌ ============================================
+            '''
+        }
+        always {
+            // Clean up Docker images to save space
+            sh """
+                docker rmi ${BACKEND_FULL}   || true
+                docker rmi ${BACKEND_LATEST}  || true
+                docker rmi ${FRONTEND_FULL}   || true
+                docker rmi ${FRONTEND_LATEST} || true
+            """
+        }
+    }
+}

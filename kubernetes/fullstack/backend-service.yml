@@ -1,0 +1,21 @@
+---
+# ==============================================================================
+# Backend Service — ClusterIP (internal only)
+# Accessed by the frontend Nginx reverse proxy at backend-service:5000
+# ==============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: fullstack
+  labels:
+    app: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000

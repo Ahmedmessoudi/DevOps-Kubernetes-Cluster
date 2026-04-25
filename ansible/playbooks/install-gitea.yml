@@ -1,0 +1,61 @@
+---
+- name: Install Gitea natively on DevOps Machine
+  hosts: devops_servers
+  become: yes
+  vars:
+    gitea_version: "1.21.7"
+  tasks:
+    - name: Install required packages (git)
+      apt:
+        name: git
+        state: present
+        update_cache: yes
+
+    - name: Create git user for Gitea
+      user:
+        name: git
+        system: yes
+        shell: /bin/bash
+        comment: "Git Version Control"
+        create_home: yes
+        home: /home/git
+
+    - name: Create Gitea directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: git
+        group: git
+        mode: '0750'
+      with_items:
+        - /var/lib/gitea
+        - /var/lib/gitea/custom
+        - /var/lib/gitea/data
+        - /var/lib/gitea/data/lfs
+        - /var/log/gitea
+
+    - name: Create /etc/gitea directory
+      file:
+        path: /etc/gitea
+        state: directory
+        owner: root
+        group: git
+        mode: '0770'
+
+    - name: Download Gitea binary
+      get_url:
+        url: "https://dl.gitea.com/gitea/{{ gitea_version }}/gitea-{{ gitea_version }}-linux-amd64"
+        dest: /usr/local/bin/gitea
+        mode: '0755'
+
+    - name: Download Gitea systemd service file
+      get_url:
+        url: "https://raw.githubusercontent.com/go-gitea/gitea/main/contrib/systemd/gitea.service"
+        dest: /etc/systemd/system/gitea.service
+
+    - name: Ensure Gitea service starts on boot and is running
+      systemd:
+        name: gitea
+        enabled: yes
+        state: started
+        daemon_reload: yes
