@@ -1,12 +1,11 @@
 ---
 # ==============================================================================
 # Playbook: configure-insecure-registry.yml
-# Purpose: Configure containerd on K8s workers to trust the Nexus registry
+# Purpose: Configure containerd on K8s nodes to trust the Nexus HTTP registry
 # Run: ansible-playbook playbooks/configure-insecure-registry.yml
 # ==============================================================================
-# This ensures that:
-#   1. containerd on workers can pull images from Nexus (192.168.56.20:8082)
-#   2. Pods scheduled on workers can pull private images from Nexus
+# Compatible with containerd v2.x (removes deprecated grpc.v1.cri config)
+# Uses the hosts.toml approach via config_path for registry resolution
 # ==============================================================================
 
 - name: Configure Insecure Registry on K8s Nodes
@@ -15,50 +14,37 @@
   tasks:
 
     # ------------------------------------------------------------------
-    # 1. Check current containerd config
+    # 1. Remove old deprecated registry config (breaks containerd v2)
     # ------------------------------------------------------------------
-    - name: Check if containerd config exists
-      stat:
-        path: /etc/containerd/config.toml
-      register: containerd_config
-
-    # ------------------------------------------------------------------
-    # 2. Add insecure registry configuration to containerd
-    # ------------------------------------------------------------------
-    - name: Check if Nexus registry already configured
-      shell: grep -c "192.168.56.20:8082" /etc/containerd/config.toml
-      register: registry_configured
-      ignore_errors: yes
-      changed_when: false
-      when: containerd_config.stat.exists
-
-    - name: Add Nexus insecure registry to containerd config
+    - name: Remove old NEXUS INSECURE REGISTRY block from config.toml
       blockinfile:
         path: /etc/containerd/config.toml
         marker: "# {mark} NEXUS INSECURE REGISTRY"
-        block: |
-          [plugins."io.containerd.grpc.v1.cri".registry]
-            [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
-              [plugins."io.containerd.grpc.v1.cri".registry.mirrors."192.168.56.20:8082"]
-                endpoint = ["http://192.168.56.20:8082"]
-            [plugins."io.containerd.grpc.v1.cri".registry.configs]
-              [plugins."io.containerd.grpc.v1.cri".registry.configs."192.168.56.20:8082".tls]
-                insecure_skip_verify = true
-      when:
-        - containerd_config.stat.exists
-        - registry_configured.stdout | default('0') | int == 0
-      notify: restart containerd
+        state: absent
+
+    - name: Remove orphaned grpc.v1.cri registry section header
+      lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\]'
+        state: absent
 
     # ------------------------------------------------------------------
-    # 3. Create containerd hosts directory configuration (newer method)
+    # 2. Configure hosts.toml for Nexus HTTP registry
     # ------------------------------------------------------------------
-    - name: Create containerd hosts directory for Nexus
+    - name: Ensure correct single-path config_path in containerd config
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'config_path = [''"].*[''"]'
+        replace: 'config_path = "/etc/containerd/certs.d"'
+
+    - name: Create containerd certs.d directory for Nexus
       file:
         path: /etc/containerd/certs.d/192.168.56.20:8082
         state: directory
         mode: '0755'
+        recurse: yes
 
-    - name: Configure Nexus registry host
+    - name: Write hosts.toml for Nexus HTTP registry
       copy:
         dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
         content: |
@@ -68,17 +54,65 @@
             capabilities = ["pull", "resolve", "push"]
             skip_verify = true
         mode: '0644'
-      notify: restart containerd
+
+    - name: Create containerd certs.d directory for Nexus Alias IP
+      file:
+        path: /etc/containerd/certs.d/10.56.20.20:8082
+        state: directory
+        mode: '0755'
+        recurse: yes
+
+    - name: Write hosts.toml for Nexus HTTP registry Alias IP
+      copy:
+        dest: /etc/containerd/certs.d/10.56.20.20:8082/hosts.toml
+        content: |
+          server = "http://10.56.20.20:8082"
+
+          [host."http://10.56.20.20:8082"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+        mode: '0644'
 
     # ------------------------------------------------------------------
-    # 4. Verify configuration
+    # 3. Verify containerd config is parseable
     # ------------------------------------------------------------------
-    - name: Display registry configuration status
+    - name: Check effective config_path in containerd
+      shell: containerd config dump 2>/dev/null | grep 'config_path' | grep 'certs.d' | head -1
+      register: config_dump_check
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Show effective config_path
       debug:
-        msg: "Insecure registry configured for 192.168.56.20:8082 on {{ inventory_hostname }}"
+        msg: "Effective config_path: {{ config_dump_check.stdout | default('NOT FOUND — config may need regeneration') }}"
 
-  handlers:
-    - name: restart containerd
+    # ------------------------------------------------------------------
+    # 4. Restart containerd and verify
+    # ------------------------------------------------------------------
+    - name: Restart containerd
       systemd:
         name: containerd
         state: restarted
+
+    - name: Wait for containerd to stabilize
+      pause:
+        seconds: 10
+
+    - name: Verify containerd is active
+      shell: systemctl is-active containerd
+      register: containerd_active
+      changed_when: false
+
+    - name: Test image pull from Nexus
+      shell: |
+        crictl --image-endpoint unix:///run/containerd/containerd.sock pull 192.168.56.20:8082/fullstack-backend:latest 2>&1
+      register: pull_test
+      ignore_errors: yes
+      timeout: 30
+
+    - name: Display results
+      debug:
+        msg: |
+          containerd: {{ containerd_active.stdout }}
+          config_path: {{ config_dump_check.stdout | default('NOT FOUND') }}
+          Pull test: {{ 'SUCCESS' if pull_test.rc == 0 else pull_test.stderr | default(pull_test.stdout | default('FAILED')) }}

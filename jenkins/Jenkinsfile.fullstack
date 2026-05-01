@@ -14,8 +14,8 @@ pipeline {
     agent any
 
     environment {
-        // Nexus Docker Registry
-        NEXUS_REGISTRY    = "192.168.56.20:8082"
+        // Nexus Docker Registry (using alias IP to bypass Calico routing conflict)
+        NEXUS_REGISTRY    = "10.56.20.20:8082"
         BACKEND_IMAGE     = "fullstack-backend"
         FRONTEND_IMAGE    = "fullstack-frontend"
         IMAGE_TAG         = "${BUILD_NUMBER}"

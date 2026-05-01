@@ -68,10 +68,10 @@
     # 4. Configure containerd to trust Nexus insecure registry
     #    Using config_path approach with certs.d directory (safe, no TOML corruption)
     # ------------------------------------------------------------------
-    - name: Enable registry config_path in containerd config
+    - name: Ensure correct single-path config_path in containerd config
       replace:
         path: /etc/containerd/config.toml
-        regexp: 'config_path = ""'
+        regexp: 'config_path = [''"].*[''"]'
         replace: 'config_path = "/etc/containerd/certs.d"'
 
     - name: Create Nexus registry certs directory
