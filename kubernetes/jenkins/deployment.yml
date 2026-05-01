@@ -114,6 +114,12 @@ spec:
         # ============================================================
         - name: dind
           image: docker:dind
+          command: ["dockerd-entrypoint.sh"]
+          args:
+            - "--insecure-registry"
+            - "10.56.20.20:8082"
+            - "--insecure-registry"
+            - "192.168.56.20:8082"
           securityContext:
             privileged: true
           env:
