@@ -118,14 +118,14 @@ pipeline {
                     # Create namespace (idempotent)
                     kubectl apply -f kubernetes/fullstack/namespace.yml
 
-                    # Create Nexus registry secret in fullstack namespace (if not exists)
-                    kubectl get secret nexus-registry-secret -n fullstack > /dev/null 2>&1 || \\
-                    kubectl create secret docker-registry nexus-registry-secret \\
-                        --docker-server=${NEXUS_REGISTRY} \\
-                        --docker-username=${NEXUS_CREDS_USR} \\
-                        --docker-password=${NEXUS_CREDS_PSW} \\
-                        --docker-email=admin@example.com \\
-                        -n fullstack
+                    # Create/Update Nexus registry secret in fullstack namespace
+                    kubectl create secret docker-registry nexus-registry-secret \
+                        --docker-server=${NEXUS_REGISTRY} \
+                        --docker-username=${NEXUS_CREDS_USR} \
+                        --docker-password=${NEXUS_CREDS_PSW} \
+                        --docker-email=admin@example.com \
+                        -n fullstack \
+                        --dry-run=client -o yaml | kubectl apply -f -
 
                     # Deploy PostgreSQL (storage + deployment + service)
                     kubectl apply -f kubernetes/fullstack/postgres-nfs-pv-pvc.yml
