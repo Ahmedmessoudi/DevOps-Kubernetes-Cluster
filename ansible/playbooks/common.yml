@@ -87,3 +87,25 @@
           - lsb-release
           - software-properties-common
         state: present
+
+# ------------------------------------------------------------------------------
+# Play 2: Fix Calico Routing Conflict (Alias IP Workaround)
+# ------------------------------------------------------------------------------
+- name: Fix Calico Subnet Conflict
+  hosts: all_nodes
+  become: yes
+  tasks:
+    - name: Add Alias IP to DevOps machine (Bypass 192.168.0.0/16 conflict)
+      shell: |
+        if ! ip addr show enp0s8 | grep -q "10.56.20.20"; then
+          ip addr add 10.56.20.20/32 dev enp0s8
+        fi
+      when: inventory_hostname == 'devops'
+
+    - name: Add route to Alias IP on Kubernetes nodes
+      shell: |
+        if ! ip route | grep -q "10.56.20.20"; then
+          ip route add 10.56.20.20 via 192.168.56.20
+        fi
+      when: inventory_hostname != 'devops'
+
