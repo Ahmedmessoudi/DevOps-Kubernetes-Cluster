@@ -21,6 +21,7 @@ spec:
       labels:
         app: backend
     spec:
+      serviceAccountName: fullstack-app-sa
       containers:
         - name: backend
           image: 192.168.56.20:8082/fullstack-backend:latest

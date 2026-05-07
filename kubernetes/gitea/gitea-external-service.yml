@@ -1,0 +1,43 @@
+# ==============================================================================
+# Gitea External Service
+# Purpose: Create a Kubernetes DNS entry for Gitea running on the DevOps machine
+# This allows pods to reach Gitea via:
+#   http://gitea.gitea.svc.cluster.local:3000
+# instead of using the raw IP 192.168.56.20
+# ==============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitea
+
+---
+
+# Service without a selector — we manually define the Endpoints below
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: gitea
+spec:
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+
+---
+
+# Manual Endpoints pointing to the real DevOps machine IP
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: gitea
+  namespace: gitea
+subsets:
+  - addresses:
+      - ip: 192.168.56.20
+    ports:
+      - name: http
+        port: 3000
+        protocol: TCP

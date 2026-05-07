@@ -21,6 +21,7 @@ spec:
       labels:
         app: frontend
     spec:
+      serviceAccountName: fullstack-app-sa
       containers:
         - name: frontend
           image: 192.168.56.20:8082/fullstack-frontend:latest

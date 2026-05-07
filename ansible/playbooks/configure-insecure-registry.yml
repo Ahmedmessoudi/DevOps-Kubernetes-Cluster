@@ -57,18 +57,18 @@
 
     - name: Create containerd certs.d directory for Nexus Alias IP
       file:
-        path: /etc/containerd/certs.d/10.56.20.20:8082
+        path: /etc/containerd/certs.d/192.168.56.20:8082
         state: directory
         mode: '0755'
         recurse: yes
 
     - name: Write hosts.toml for Nexus HTTP registry Alias IP
       copy:
-        dest: /etc/containerd/certs.d/10.56.20.20:8082/hosts.toml
+        dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
         content: |
-          server = "http://10.56.20.20:8082"
+          server = "http://192.168.56.20:8082"
 
-          [host."http://10.56.20.20:8082"]
+          [host."http://192.168.56.20:8082"]
             capabilities = ["pull", "resolve", "push"]
             skip_verify = true
         mode: '0644'

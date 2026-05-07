@@ -22,6 +22,7 @@ spec:
       labels:
         app: postgres
     spec:
+      serviceAccountName: fullstack-app-sa
       containers:
         - name: postgres
           image: postgres:15-alpine
