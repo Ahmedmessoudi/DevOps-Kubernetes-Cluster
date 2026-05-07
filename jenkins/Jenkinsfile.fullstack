@@ -126,6 +126,9 @@ pipeline {
                         --docker-email=admin@example.com \
                         -n fullstack \
                         --dry-run=client -o yaml | kubectl apply -f -
+                    # Apply Security and RBAC (creates ServiceAccounts and NetworkPolicies)
+                    kubectl apply -f kubernetes/fullstack/security-rbac.yml
+                    kubectl apply -f kubernetes/fullstack/security-network-policies.yml
 
                     # Deploy PostgreSQL (storage + deployment + service)
                     kubectl apply -f kubernetes/fullstack/postgres-nfs-pv-pvc.yml
