@@ -15,13 +15,20 @@
 6. [Playbook 3: install-kubernetes.yml](#6-playbook-3-install-kubernetesyml)
 7. [Playbook 4: init-master.yml](#7-playbook-4-init-masteryml)
 8. [Playbook 5: join-workers.yml](#8-playbook-5-join-workersyml)
-9. [Playbook 6: install-jenkins.yml](#9-playbook-6-install-jenkinsyml)
-10. [Playbook 7: install-nexus.yml](#10-playbook-7-install-nexusyml)
-11. [Playbook 8: configure-kubectl-devops.yml](#11-playbook-8-configure-kubectl-devopsyml)
-12. [Kubernetes YAML Files](#12-kubernetes-yaml-files)
-13. [Jenkinsfile (CI/CD Pipeline)](#13-jenkinsfile-cicd-pipeline)
-14. [Sample Application](#14-sample-application)
-15. [Complete Execution Flow Summary](#15-complete-execution-flow-summary)
+9. [Playbook 6: configure-insecure-registry.yml](#9-playbook-6-configure-insecure-registryyml)
+10. [Playbook 7: configure-kubectl-devops.yml](#10-playbook-7-configure-kubectl-devopsyml)
+11. [Playbook 8: install-jenkins.yml](#11-playbook-8-install-jenkinsyml)
+12. [Playbook 9: install-gitea.yml](#12-playbook-9-install-giteayml)
+13. [Playbook 10: install-nexus.yml](#13-playbook-10-install-nexusyml)
+14. [Playbook 11: setup-nfs-server.yml](#14-playbook-11-setup-nfs-serveryml)
+15. [Playbook 12: setup-nfs-postgres.yml](#15-playbook-12-setup-nfs-postgresyml)
+16. [Playbook 13: setup-nfs-clients.yml](#16-playbook-13-setup-nfs-clientsyml)
+17. [Kubernetes YAML Files](#17-kubernetes-yaml-files)
+18. [Jenkinsfile (CI/CD Pipeline)](#18-jenkinsfile-cicd-pipeline)
+19. [Jenkinsfile.fullstack (Fullstack Pipeline)](#19-jenkinsfilefullstack-fullstack-pipeline)
+20. [Deep Dives (Line-by-Line)](#20-deep-dives-line-by-line)
+21. [Sample Application](#21-sample-application)
+22. [Complete Execution Flow Summary](#22-complete-execution-flow-summary)
 
 ---
 
@@ -89,7 +96,13 @@ k8s-master ←──────────────────────
                     Port 10250 (kubelet)
 k8s-master ──────────────────────────────→ workers
 
-                    Port 8080 (Jenkins Web UI)
+                    Port 32000 (Jenkins Web UI)
+workers ←─────────────────────────────────── Your Browser
+
+                    Port 32001 (Jenkins Agent)
+workers ←─────────────────────────────────── Jenkins agents
+
+                    Port 3000 (Gitea Web UI)
 devops ←──────────────────────────────────── Your Browser
 
                     Port 8081 (Nexus Web UI)
@@ -98,7 +111,10 @@ devops ←───────────────────────�
                     Port 8082 (Docker Registry)
 devops ←──────────────────────────────────── All VMs (push/pull images)
 
-                    Port 30080 (App NodePort)
+                    Port 30080 (Sample App NodePort)
+workers ←─────────────────────────────────── Your Browser
+
+                    Port 30090 (Fullstack Frontend NodePort)
 workers ←─────────────────────────────────── Your Browser
 ```
 
@@ -387,24 +403,27 @@ Files in `/etc/modules-load.d/` are read at boot to load kernel modules automati
 
 Linux uses "cgroups" (control groups) to limit CPU/memory per process. There are two cgroup drivers: `cgroupfs` and `systemd`. Kubernetes defaults to `systemd`. If containerd uses `cgroupfs` while kubelet uses `systemd`, they fight over resources and **kubelet crashes**. They MUST use the same driver.
 
-### Nexus Insecure Registry Config
+### Nexus Registry via hosts.toml (Modern containerd)
 
 ```yaml
-    - name: Add insecure registry config for Nexus
-      blockinfile:                         # Add a block of text to a file
+    - name: Ensure correct single-path config_path in containerd config
+      replace:
         path: /etc/containerd/config.toml
-        marker: "# {mark} NEXUS REGISTRY CONFIG"  # Markers to identify this block
-        insertafter: EOF                   # Add at end of file
-        block: |
-          [plugins."io.containerd.grpc.v1.cri".registry.mirrors."192.168.56.20:8082"]
-            endpoint = ["http://192.168.56.20:8082"]
-          [plugins."io.containerd.grpc.v1.cri".registry.configs."192.168.56.20:8082".tls]
-            insecure_skip_verify = true
+        regexp: 'config_path = [''"].*[''"]'
+        replace: 'config_path = "/etc/containerd/certs.d"'
+
+    - name: Create Nexus registry hosts.toml config
+      copy:
+        dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
+        content: |
+          server = "http://192.168.56.20:8082"
+
+          [host."http://192.168.56.20:8082"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
 ```
 
-**WHY:** By default, containerd only pulls images from HTTPS registries. Our Nexus runs on plain HTTP (port 8082). This config tells containerd: "it's OK to use HTTP for 192.168.56.20:8082".
-
-Without this, `kubectl apply` would fail with `ImagePullBackOff` because the workers can't pull from Nexus.
+**WHY:** containerd now prefers `hosts.toml` under `/etc/containerd/certs.d`. This keeps `config.toml` clean and avoids deprecated `grpc.v1.cri` registry blocks. Without this, image pulls from Nexus (HTTP) fail with `ImagePullBackOff`.
 
 ---
 
@@ -614,74 +633,148 @@ This contains:
 
 ---
 
-## 9. Playbook 6: `install-jenkins.yml`
+## 9. Playbook 6: `configure-insecure-registry.yml`
 
-**Purpose:** Install Jenkins (CI/CD server) on the devops machine.
+**Purpose:** Clean up deprecated containerd registry config and configure the Nexus HTTP registry using `hosts.toml`.
 
-**Runs on:** `devops` only
+**Runs on:** `k8s_cluster` (master + workers)
 
-### Key Tasks Explained
+### Remove old registry config (containerd v2.x compatibility)
 
 ```yaml
-    # Jenkins requires Java to run
+    - name: Remove old NEXUS INSECURE REGISTRY block from config.toml
+      blockinfile:
+        path: /etc/containerd/config.toml
+        marker: "# {mark} NEXUS INSECURE REGISTRY"
+        state: absent
+
+    - name: Remove orphaned grpc.v1.cri registry section header
+      lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^\[plugins\."io\.containerd\.grpc\.v1\.cri"\.registry\]'
+        state: absent
+```
+
+**WHY:** containerd v2 treats the old `grpc.v1.cri` registry config as deprecated. Removing it prevents config parsing errors.
+
+### Use hosts.toml via config_path
+
+```yaml
+    - name: Ensure correct single-path config_path in containerd config
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'config_path = [''"].*[''"]'
+        replace: 'config_path = "/etc/containerd/certs.d"'
+
+    - name: Write hosts.toml for Nexus HTTP registry
+      copy:
+        dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
+        content: |
+          server = "http://192.168.56.20:8082"
+
+          [host."http://192.168.56.20:8082"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+```
+
+**WHY:** `hosts.toml` is the modern, safe way to configure HTTP registries without corrupting `config.toml`.
+
+### Restart and verify
+
+```yaml
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+
+    - name: Test image pull from Nexus
+      shell: |
+        crictl --image-endpoint unix:///run/containerd/containerd.sock pull 192.168.56.20:8082/fullstack-backend:latest 2>&1
+```
+
+---
+
+## 10. Playbook 7: `configure-kubectl-devops.yml`
+
+**Purpose:** Copy kubeconfig from master to the devops machine and to NFS for the Jenkins pod.
+
+### Play 1: Read kubeconfig from master
+
+```yaml
+    - name: Read kubeconfig from master
+      slurp:
+        src: /etc/kubernetes/admin.conf
+      register: kubeconfig_content
+
+    - name: Set kubeconfig fact
+      set_fact:
+        kubeconfig_data: "{{ kubeconfig_content.content | b64decode }}"
+```
+
+### Play 2: Write kubeconfig on devops and fix API server IP
+
+```yaml
+    - name: Write kubeconfig for vagrant user
+      copy:
+        content: "{{ hostvars['k8s-master']['kubeconfig_data'] }}"
+        dest: /home/vagrant/.kube/config
+
+    - name: Update API server address in vagrant kubeconfig
+      replace:
+        path: /home/vagrant/.kube/config
+        regexp: 'server: https://[^:]+:6443'
+        replace: 'server: https://192.168.56.10:6443'
+```
+
+### Play 3: Copy kubeconfig to NFS for Jenkins pod
+
+```yaml
+    - name: Write kubeconfig to NFS Jenkins home
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /srv/nfs/jenkins/.kube/config
+        remote_src: yes
+
+    - name: Update API server address in Jenkins kubeconfig
+      replace:
+        path: /srv/nfs/jenkins/.kube/config
+        regexp: 'server: https://[^:]+:6443'
+        replace: 'server: https://192.168.56.10:6443'
+```
+
+**WHY:** Jenkins runs as a Kubernetes pod and mounts `/srv/nfs/jenkins` as its home. Putting the kubeconfig there allows pipelines to call `kubectl` directly from the pod.
+
+---
+
+## 11. Playbook 8: `install-jenkins.yml`
+
+**Purpose:** Install Docker and kubectl on the devops machine. **Jenkins itself now runs inside Kubernetes.**
+
+**Note:** This playbook no longer installs the Jenkins package on the VM.
+
+```yaml
     - name: Install Java 17 JDK
       apt:
         name: openjdk-17-jdk
 
-    # Jenkins is not in Ubuntu's default repos — add their official repo
-    - name: Add Jenkins GPG key
-      apt_key:
-        url: https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-
-    - name: Add Jenkins repository
-      apt_repository:
-        repo: "deb https://pkg.jenkins.io/debian-stable binary/"
-
-    - name: Install Jenkins
-      apt:
-        name: jenkins
-```
-
-### Why Docker is Installed on DevOps
-
-```yaml
     - name: Install Docker
       apt:
         name:
           - docker-ce
           - docker-ce-cli
           - containerd.io
-```
 
-Jenkins needs Docker to **build Docker images** (`docker build`) and **push them to Nexus** (`docker push`). Without Docker on the devops machine, the CI/CD pipeline can't create container images.
-
-### Adding Jenkins to Docker Group
-
-```yaml
-    - name: Add jenkins user to docker group
+    - name: Add vagrant user to docker group
       user:
-        name: jenkins                      # The user Jenkins service runs as
-        groups: docker                     # Add to the "docker" group
-        append: yes                        # Don't remove from other groups
-```
+        name: vagrant
+        groups: docker
+        append: yes
 
-**WHY:** By default, only `root` can run Docker commands. The Jenkins service runs as the `jenkins` user. Adding `jenkins` to the `docker` group lets Jenkins run `docker build` and `docker push` without `sudo`.
-
-### Installing kubectl on DevOps
-
-```yaml
     - name: Download kubectl binary
       get_url:
         url: "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl"
         dest: /usr/local/bin/kubectl
-        mode: '0755'                       # Make it executable
-```
 
-Jenkins needs `kubectl` to deploy applications to the Kubernetes cluster. The pipeline's last stage runs `kubectl apply -f deployment.yml`.
-
-### Insecure Registry for Docker
-
-```yaml
     - name: Create Docker daemon.json for insecure registry
       copy:
         dest: /etc/docker/daemon.json
@@ -691,196 +784,334 @@ Jenkins needs `kubectl` to deploy applications to the Kubernetes cluster. The pi
           }
 ```
 
-Same concept as with containerd — Docker needs to know that `192.168.56.20:8082` (Nexus) uses HTTP, not HTTPS.
+**WHY:** DevOps still needs Docker to build images locally and run Nexus, and kubectl for manual cluster operations.
 
 ---
 
-## 10. Playbook 7: `install-nexus.yml`
+## 12. Playbook 9: `install-gitea.yml`
 
-**Purpose:** Install Nexus Repository Manager as a Docker container.
-
-**What is Nexus?** It's a repository manager. We use it as a **private Docker registry** — a place to store our Docker images (like a private Docker Hub).
+**Purpose:** Install Gitea natively on the devops machine as a systemd service.
 
 ```yaml
-    # Create a persistent storage directory
+    - name: Create git user for Gitea
+      user:
+        name: git
+        system: yes
+
+    - name: Download Gitea binary
+      get_url:
+        url: "https://dl.gitea.com/gitea/{{ gitea_version }}/gitea-{{ gitea_version }}-linux-amd64"
+        dest: /usr/local/bin/gitea
+
+    - name: Download Gitea systemd service file
+      get_url:
+        url: "https://raw.githubusercontent.com/go-gitea/gitea/main/contrib/systemd/gitea.service"
+        dest: /etc/systemd/system/gitea.service
+
+    - name: Ensure Gitea service starts on boot and is running
+      systemd:
+        name: gitea
+        enabled: yes
+        state: started
+```
+
+**WHY:** Running Gitea directly on the devops VM keeps Git storage outside the Kubernetes cluster while still allowing in-cluster access via a Service/Endpoints object.
+
+---
+
+## 13. Playbook 10: `install-nexus.yml`
+
+**Purpose:** Install Nexus Repository Manager as a Docker container on devops.
+
+### Time sync and Docker SDK
+
+```yaml
+    - name: Synchronize system clock
+      command: ntpdate -u pool.ntp.org
+
+    - name: Install Docker SDK for Python
+      pip:
+        name: docker
+```
+
+**WHY:** Nexus can fail TLS checks if the VM clock is off; Ansible Docker modules require the Docker SDK.
+
+### Run Nexus
+
+```yaml
     - name: Create Nexus data directory
       file:
         path: /opt/nexus-data
-        state: directory
-        owner: "200"                       # Nexus runs as user ID 200 inside the container
+        owner: "200"
         group: "200"
 
-    # Run Nexus as a Docker container
     - name: Run Nexus container
-      docker_container:                    # Ansible module for Docker containers
-        name: nexus                        # Container name
-        image: sonatype/nexus3:latest      # Official Nexus 3 image
-        state: started
-        restart_policy: always             # Auto-restart if it crashes or on reboot
+      docker_container:
+        name: nexus
+        image: sonatype/nexus3:latest
         ports:
-          - "8081:8081"                    # Nexus Web UI
-          - "8082:8082"                    # Docker Registry port
+          - "8081:8081"
+          - "8082:8082"
         volumes:
-          - "/opt/nexus-data:/nexus-data"  # Persist data outside the container
-        env:
-          INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx512m -XX:MaxDirectMemorySize=512m"
-          # Limit Java memory to 512MB (Nexus is a Java app, can be memory-hungry)
+          - "/opt/nexus-data:/nexus-data"
 ```
 
-**Volumes explained:** If we don't mount `/opt/nexus-data`, all Nexus data (repositories, users, images) would be lost when the container restarts. The volume maps the container's `/nexus-data` directory to the host's `/opt/nexus-data`.
-
-### Waiting for Nexus to Start
-
-```yaml
-    - name: Wait for Nexus to start (may take 2-3 minutes)
-      uri:                                 # Ansible module to make HTTP requests
-        url: http://localhost:8081/service/rest/v1/status
-        method: GET
-        status_code: 200                   # Expected response code
-      register: nexus_status
-      until: nexus_status.status == 200    # Keep trying until we get 200
-      retries: 30                          # Try up to 30 times
-      delay: 10                            # Wait 10 seconds between retries
-```
-
-Nexus takes 2-3 minutes to start up. This task polls the health endpoint every 10 seconds until Nexus responds with HTTP 200 (OK).
+**WHY:** `/opt/nexus-data` persists all repositories and credentials.
 
 ---
 
-## 11. Playbook 8: `configure-kubectl-devops.yml`
+## 14. Playbook 11: `setup-nfs-server.yml`
 
-**Purpose:** Copy the Kubernetes access credentials from the master to the devops machine, so Jenkins can deploy to K8s.
-
-### Play 1: Read kubeconfig from master
+**Purpose:** Create NFS exports for Jenkins and shared data on the master.
 
 ```yaml
-    - name: Read kubeconfig from master
-      slurp:                               # Ansible module to read a file and base64-encode it
-        src: /etc/kubernetes/admin.conf
-      register: kubeconfig_content
+    - name: Create Jenkins NFS directory
+      file:
+        path: /srv/nfs/jenkins
+        owner: "1000"
+        group: "1000"
 
-    - name: Set kubeconfig fact
-      set_fact:
-        kubeconfig_data: "{{ kubeconfig_content.content | b64decode }}"
-        # kubeconfig_content.content is base64-encoded
-        # | b64decode is a Jinja2 filter that decodes it back to plain text
-```
-
-**`slurp` explained:** Ansible can't directly copy a file between two remote machines. `slurp` reads the file content into memory, and then in Play 2 we write it on the devops machine.
-
-### Play 2: Write kubeconfig on devops
-
-```yaml
-    # For the vagrant user (manual kubectl commands)
-    - name: Write kubeconfig for vagrant user
+    - name: Configure NFS exports
       copy:
-        content: "{{ hostvars['k8s-master']['kubeconfig_data'] }}"
-        dest: /home/vagrant/.kube/config
-
-    # For the jenkins user (CI/CD pipeline)
-    - name: Write kubeconfig for jenkins user
-      copy:
-        content: "{{ hostvars['k8s-master']['kubeconfig_data'] }}"
-        dest: /var/lib/jenkins/.kube/config
+        dest: /etc/exports
+        content: |
+          /srv/nfs/jenkins  192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
+          /srv/nfs/data     192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
 ```
 
-### Fix the API Server Address
-
-```yaml
-    - name: Update API server address in vagrant kubeconfig
-      replace:
-        path: /home/vagrant/.kube/config
-        regexp: 'server: https://[^:]+:6443'      # Find the API server line
-        replace: 'server: https://192.168.56.10:6443'  # Set to master's private IP
-```
-
-**WHY:** The kubeconfig generated by `kubeadm init` might contain the master's internal IP (like `10.0.2.15` — the Vagrant NAT interface). The devops machine can't reach that IP. We replace it with `192.168.56.10` (the private network IP that devops CAN reach).
+**WHY:** Jenkins runs in a pod, so its home directory must persist outside the container.
 
 ---
 
-## 12. Kubernetes YAML Files
+## 15. Playbook 12: `setup-nfs-postgres.yml`
 
-### `deployment.yml` — What to Run
+**Purpose:** Add `/srv/nfs/postgres` export for PostgreSQL persistent storage.
 
 ```yaml
-apiVersion: apps/v1                        # Kubernetes API version
-kind: Deployment                           # Resource type: Deployment
-                                           # (manages a set of identical pods)
-metadata:
-  name: hello-devops                       # Name of this deployment
-  labels:
-    app: hello-devops                      # Label for identification
+    - name: Create PostgreSQL NFS directory
+      file:
+        path: /srv/nfs/postgres
+        owner: "70"
+        group: "70"
+        mode: '0700'
 
+    - name: Add PostgreSQL NFS export
+      lineinfile:
+        path: /etc/exports
+        line: "/srv/nfs/postgres  192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)"
+```
+
+**WHY:** The PostgreSQL pod uses an NFS-backed PersistentVolume to keep data across restarts.
+
+---
+
+## 16. Playbook 13: `setup-nfs-clients.yml`
+
+**Purpose:** Install NFS client tools on worker nodes and devops.
+
+```yaml
+    - name: Install NFS client packages
+      apt:
+        name:
+          - nfs-common
+
+    - name: Test NFS server reachability
+      command: showmount -e 192.168.56.10
+```
+
+**WHY:** Workers must be able to mount NFS volumes for Jenkins and PostgreSQL PVs.
+
+---
+
+## 17. Kubernetes YAML Files
+
+### Registry Secret (Nexus)
+
+**File:** `kubernetes/nexus-secret.yml`
+
+This file is a **template only**. The real secret is created with `kubectl`:
+
+```yaml
+# kubectl create secret docker-registry nexus-registry-secret \
+#   --docker-server=192.168.56.20:8082 \
+#   --docker-username=admin \
+#   --docker-password=YOUR_NEXUS_PASSWORD \
+#   --docker-email=admin@example.com
+```
+
+Pods use `imagePullSecrets: nexus-registry-secret` to pull images from Nexus.
+
+---
+
+### Sample App: hello-devops
+
+**Files:** `kubernetes/deployment.yml`, `kubernetes/service.yml`
+
+```yaml
+kind: Deployment
 spec:
-  replicas: 2                              # Run 2 copies of the pod (for high availability)
-  selector:
-    matchLabels:
-      app: hello-devops                    # This deployment manages pods with this label
-
-  template:                                # Template for the pods:
-    metadata:
-      labels:
-        app: hello-devops                  # Label applied to each pod
+  replicas: 2
+  template:
     spec:
       containers:
-        - name: hello-devops
-          image: 192.168.56.20:8082/hello-devops:latest
-          #       ↑ Nexus registry    ↑ image name   ↑ tag
-          ports:
-            - containerPort: 3000          # The app listens on port 3000
-          resources:
-            requests:                      # Minimum resources guaranteed:
-              memory: "64Mi"               #   64 MB RAM
-              cpu: "100m"                  #   0.1 CPU core (100 millicores)
-            limits:                        # Maximum resources allowed:
-              memory: "128Mi"              #   128 MB RAM
-              cpu: "250m"                  #   0.25 CPU core
-
+        - image: 192.168.56.20:8082/hello-devops:latest
       imagePullSecrets:
-        - name: nexus-registry-secret      # Kubernetes uses this secret to log into Nexus
+        - name: nexus-registry-secret
 ```
-
-**How the replica count works:**
-```
-Deployment (replicas: 2)
-├── Pod 1: hello-devops-abc12  → runs on k8s-worker1
-└── Pod 2: hello-devops-def34  → runs on k8s-worker2
-```
-
-Kubernetes automatically distributes pods across available worker nodes.
-
-### `service.yml` — How to Access the App
 
 ```yaml
-apiVersion: v1
-kind: Service                              # A Service provides a stable endpoint for pods
-metadata:
-  name: hello-devops-service
-
+kind: Service
 spec:
-  type: NodePort                           # Expose the service on every node's IP
-  selector:
-    app: hello-devops                      # Route traffic to pods with this label
+  type: NodePort
   ports:
-    - protocol: TCP
-      port: 3000                           # The Service's internal port
-      targetPort: 3000                     # Forward to this port on the pod
-      nodePort: 30080                      # The external port on each node's IP
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30080
 ```
 
-**NodePort explained:**
-```
-Browser → http://192.168.56.11:30080 → Service → Pod 1 or Pod 2
-Browser → http://192.168.56.12:30080 → Service → Pod 1 or Pod 2
-                                          ↑
-                                   Load balances between pods
-```
-
-You can access the app through ANY node's IP on port 30080.
+**Result:** `http://<worker-ip>:30080` routes to 2 replicas.
 
 ---
 
-## 13. Jenkinsfile (CI/CD Pipeline)
+### Gitea External Service
+
+**File:** `kubernetes/gitea/gitea-external-service.yml`
+
+```yaml
+kind: Service
+spec:
+  ports:
+    - port: 3000
+---
+kind: Endpoints
+subsets:
+  - addresses:
+      - ip: 192.168.56.20
+    ports:
+      - port: 3000
+```
+
+**WHY:** Pods can reach Gitea using `http://gitea.gitea.svc.cluster.local:3000` even though Gitea runs outside the cluster.
+
+---
+
+### Jenkins (Runs Inside Kubernetes)
+
+**Files:**
+- `kubernetes/jenkins/namespace.yml`
+- `kubernetes/jenkins/deployment.yml`
+- `kubernetes/jenkins/service.yml`
+- `kubernetes/jenkins/rbac.yml`
+- `kubernetes/jenkins/nfs-pv-pvc.yml`
+
+**Key ideas:**
+- Jenkins controller runs as a pod with a **DinD sidecar**.
+- NFS-backed PVC persists `/var/jenkins_home`.
+- Node affinity avoids scheduling on the control-plane.
+- Service exposes ports `32000` (UI) and `32001` (agents).
+
+```yaml
+kind: Deployment
+spec:
+  template:
+    spec:
+      serviceAccountName: jenkins
+      initContainers:
+        - name: install-docker-cli
+          image: docker:latest
+      containers:
+        - name: jenkins
+          image: jenkins/jenkins:lts-jdk17
+        - name: dind
+          image: docker:dind
+          securityContext:
+            privileged: true
+```
+
+```yaml
+kind: Service
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      nodePort: 32000
+    - port: 50000
+      nodePort: 32001
+```
+
+---
+
+### Fullstack App (Task Manager)
+
+**Namespace:** `kubernetes/fullstack/namespace.yml`
+
+```yaml
+kind: Namespace
+metadata:
+  name: fullstack
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+```
+
+**Backend:** `kubernetes/fullstack/backend-deployment.yml`
+
+```yaml
+containers:
+  - image: 192.168.56.20:8082/fullstack-backend:latest
+    env:
+      - name: PG_HOST
+        value: "postgres-service"
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+```
+
+**Frontend:** `kubernetes/fullstack/frontend-deployment.yml`
+
+```yaml
+containers:
+  - image: 192.168.56.20:8082/fullstack-frontend:latest
+imagePullSecrets:
+  - name: nexus-registry-secret
+```
+
+**PostgreSQL + Storage:**
+- `kubernetes/fullstack/postgres-deployment.yml`
+- `kubernetes/fullstack/postgres-service.yml`
+- `kubernetes/fullstack/postgres-nfs-pv-pvc.yml`
+
+```yaml
+kind: PersistentVolume
+spec:
+  nfs:
+    server: 192.168.56.10
+    path: /srv/nfs/postgres
+```
+
+**Network Policies:** `kubernetes/fullstack/security-network-policies.yml`
+
+```yaml
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+```
+
+**RBAC:** `kubernetes/fullstack/security-rbac.yml`
+
+```yaml
+kind: Role
+rules:
+  - resources: ["pods", "endpoints", "services"]
+    verbs: ["get", "list", "watch"]
+```
+
+---
+
+## 18. Jenkinsfile (CI/CD Pipeline)
 
 The Jenkinsfile defines a **6-stage pipeline** that automates building and deploying the app:
 
@@ -908,7 +1139,7 @@ environment {
     FULL_IMAGE     = "${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
     // Example: "192.168.56.20:8082/hello-devops:5"
 
-    KUBE_CONFIG    = "/var/lib/jenkins/.kube/config"  // Path to kubeconfig
+    KUBECONFIG     = "/var/jenkins_home/.kube/config"  // Path to kubeconfig (NFS-backed Jenkins home)
     NEXUS_CREDS    = credentials('nexus-docker-credentials')
     // ↑ Reads the username/password stored in Jenkins Credentials Manager
     // Creates: NEXUS_CREDS_USR (username) and NEXUS_CREDS_PSW (password)
@@ -921,7 +1152,7 @@ environment {
 stage('Deploy to Kubernetes') {
     steps {
         sh """
-            export KUBECONFIG=${KUBE_CONFIG}
+            export KUBECONFIG=${KUBECONFIG}
 
             # Try to update existing deployment's image:
             kubectl set image deployment/hello-devops \
@@ -941,7 +1172,171 @@ stage('Deploy to Kubernetes') {
 
 ---
 
-## 14. Sample Application
+## 19. Jenkinsfile.fullstack (Fullstack Pipeline)
+
+The Jenkinsfile.fullstack defines a **5-stage pipeline** for the Task Manager app:
+
+```
+Stage 1: Checkout        Pull source code from Gitea
+    ↓
+Stage 2: Build Backend   docker build backend image
+    ↓
+Stage 3: Build Frontend  docker build frontend image
+    ↓
+Stage 4: Push Images     docker push both images to Nexus
+    ↓
+Stage 5: Deploy          kubectl apply fullstack manifests
+```
+
+### Key Environment Variables
+
+```groovy
+environment {
+    NEXUS_REGISTRY  = "192.168.56.20:8082"
+    BACKEND_IMAGE   = "fullstack-backend"
+    FRONTEND_IMAGE  = "fullstack-frontend"
+    IMAGE_TAG       = "${BUILD_NUMBER}"
+
+    BACKEND_FULL    = "${NEXUS_REGISTRY}/${BACKEND_IMAGE}:${IMAGE_TAG}"
+    FRONTEND_FULL   = "${NEXUS_REGISTRY}/${FRONTEND_IMAGE}:${IMAGE_TAG}"
+
+    KUBECONFIG      = "/var/jenkins_home/.kube/config"
+    DOCKER_HOST     = "tcp://localhost:2375"
+    NEXUS_CREDS     = credentials('nexus-docker-credentials')
+}
+```
+
+### Deploy Stage (What it applies)
+
+```groovy
+stage('Deploy to Kubernetes') {
+  steps {
+    sh """
+      kubectl apply -f kubernetes/fullstack/namespace.yml
+      kubectl apply -f kubernetes/fullstack/security-rbac.yml
+      kubectl apply -f kubernetes/fullstack/security-network-policies.yml
+
+      kubectl apply -f kubernetes/fullstack/postgres-nfs-pv-pvc.yml
+      kubectl apply -f kubernetes/fullstack/postgres-deployment.yml
+      kubectl apply -f kubernetes/fullstack/postgres-service.yml
+
+      kubectl apply -f kubernetes/fullstack/backend-deployment.yml
+      kubectl apply -f kubernetes/fullstack/backend-service.yml
+
+      kubectl apply -f kubernetes/fullstack/frontend-deployment.yml
+      kubectl apply -f kubernetes/fullstack/frontend-service.yml
+    """
+  }
+}
+```
+
+**WHY:** The pipeline enforces the correct order: namespace → security → storage → database → backend → frontend.
+
+---
+
+## 20. Deep Dives (Line-by-Line)
+
+### A) Playbook: `configure-insecure-registry.yml`
+
+```yaml
+- name: Remove old NEXUS INSECURE REGISTRY block from config.toml
+  blockinfile:
+    path: /etc/containerd/config.toml
+    marker: "# {mark} NEXUS INSECURE REGISTRY"
+    state: absent
+```
+
+**WHY:** Cleans legacy config that breaks containerd v2.x parsing.
+
+```yaml
+- name: Ensure correct single-path config_path in containerd config
+  replace:
+    path: /etc/containerd/config.toml
+    regexp: 'config_path = [''"].*[''"]'
+    replace: 'config_path = "/etc/containerd/certs.d"'
+```
+
+**WHY:** Forces containerd to load registry configs from `/etc/containerd/certs.d`.
+
+```yaml
+- name: Write hosts.toml for Nexus HTTP registry
+  copy:
+    dest: /etc/containerd/certs.d/192.168.56.20:8082/hosts.toml
+    content: |
+      server = "http://192.168.56.20:8082"
+
+      [host."http://192.168.56.20:8082"]
+        capabilities = ["pull", "resolve", "push"]
+        skip_verify = true
+```
+
+**WHY:** Declares that Nexus is HTTP (not HTTPS) and enables pull/push for images.
+
+```yaml
+- name: Restart containerd
+  systemd:
+    name: containerd
+    state: restarted
+```
+
+**WHY:** Reloads containerd to pick up the new registry config.
+
+---
+
+### B) Manifest: `kubernetes/jenkins/deployment.yml`
+
+```yaml
+spec:
+  template:
+    spec:
+      serviceAccountName: jenkins
+```
+
+**WHY:** Jenkins needs RBAC permissions defined in `kubernetes/jenkins/rbac.yml`.
+
+```yaml
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+```
+
+**WHY:** Prevents scheduling the Jenkins pod on the control-plane node.
+
+```yaml
+      initContainers:
+        - name: install-docker-cli
+          image: docker:latest
+          command: ["sh", "-c", "cp /usr/local/bin/docker /docker-bin/docker"]
+```
+
+**WHY:** Copies the Docker CLI into a shared volume so Jenkins can use it.
+
+```yaml
+      containers:
+        - name: jenkins
+          env:
+            - name: DOCKER_HOST
+              value: "tcp://localhost:2375"
+```
+
+**WHY:** Tells Jenkins to use the DinD sidecar as its Docker daemon.
+
+```yaml
+        - name: dind
+          image: docker:dind
+          securityContext:
+            privileged: true
+```
+
+**WHY:** DinD requires privileged mode to run a Docker daemon inside the pod.
+
+---
+
+## 21. Sample Application
 
 ### `app.js` — Express.js Web Server
 
@@ -986,58 +1381,79 @@ CMD ["node", "app.js"]                    # Start the app
 
 ---
 
-## 15. Complete Execution Flow Summary
+## 22. Complete Execution Flow Summary
 
 ```
 STEP 1: vagrant up
-    Creates 4 VMs on private network 192.168.56.0/24
-    Each VM gets Ubuntu 22.04, /etc/hosts entries, and Python
+  Creates 4 VMs on private network 192.168.56.0/24
+  Each VM gets Ubuntu 22.04, /etc/hosts entries, and Python
 
 STEP 2: setup-ssh-keys.sh (on devops)
-    Generates SSH key pair on devops
-    Copies public key to master, worker1, worker2
-    Now devops can SSH to all nodes without password
+  Generates SSH key pair on devops
+  Copies public key to master, worker1, worker2
+  Now devops can SSH to all nodes without password
 
 STEP 3: ansible-playbook common.yml
-    On master, worker1, worker2:
-    → disable swap, load kernel modules, set sysctl params
+  On master, worker1, worker2:
+  → disable swap, load kernel modules, set sysctl params
 
 STEP 4: ansible-playbook install-containerd.yml
-    On master, worker1, worker2:
-    → install containerd, configure systemd cgroups + Nexus registry
+  On master, worker1, worker2:
+  → install containerd, set systemd cgroup driver, configure registry path
 
 STEP 5: ansible-playbook install-kubernetes.yml
-    On master, worker1, worker2:
-    → install kubeadm, kubelet, kubectl v1.29
+  On master, worker1, worker2:
+  → install kubeadm, kubelet, kubectl v1.29
 
 STEP 6: ansible-playbook init-master.yml
-    On master ONLY:
-    → kubeadm init, setup kubeconfig, install Calico, generate join token
+  On master ONLY:
+  → kubeadm init, setup kubeconfig, install Calico, generate join token
 
 STEP 7: ansible-playbook join-workers.yml
-    Read join command from master → run on worker1 and worker2
-    → Both workers register with the master
+  Read join command from master → run on worker1 and worker2
+  → Both workers register with the master
 
-STEP 8: ansible-playbook install-jenkins.yml
-    On devops ONLY:
-    → install Java, Jenkins, Docker, kubectl
+STEP 8: ansible-playbook configure-insecure-registry.yml
+  On master, worker1, worker2:
+  → remove deprecated config and set hosts.toml for Nexus HTTP registry
 
-STEP 9: ansible-playbook install-nexus.yml
-    On devops ONLY:
-    → run Nexus as Docker container (ports 8081, 8082)
+STEP 9: ansible-playbook setup-nfs-server.yml
+  On master ONLY:
+  → create NFS exports for Jenkins and shared data
 
-STEP 10: ansible-playbook configure-kubectl-devops.yml
-    Copy kubeconfig from master → devops
-    → Jenkins can now run kubectl commands against the cluster
+STEP 10: ansible-playbook setup-nfs-postgres.yml
+  On master ONLY:
+  → add /srv/nfs/postgres export for database storage
+
+STEP 11: ansible-playbook setup-nfs-clients.yml
+  On workers + devops:
+  → install NFS clients and verify mounts
+
+STEP 12: ansible-playbook install-nexus.yml
+  On devops ONLY:
+  → run Nexus as Docker container (ports 8081, 8082)
+
+STEP 13: ansible-playbook install-gitea.yml
+  On devops ONLY:
+  → run Gitea as systemd service (port 3000)
+
+STEP 14: ansible-playbook install-jenkins.yml
+  On devops ONLY:
+  → install Docker + kubectl for DevOps tooling (Jenkins runs in K8s)
+
+STEP 15: ansible-playbook configure-kubectl-devops.yml
+  Copy kubeconfig from master → devops + NFS Jenkins home
+  → Jenkins pod can run kubectl commands
+
+STEP 16: kubectl apply -f kubernetes/...
+  → deploy Jenkins, Gitea external service, sample app, and fullstack stack
 
 RESULT:
-    ✅ 3-node Kubernetes cluster fully operational
-    ✅ Jenkins CI/CD server ready
-    ✅ Nexus private Docker registry ready
-    ✅ Pipeline can build → push → deploy automatically
+  ✅ 3-node Kubernetes cluster fully operational
+  ✅ Jenkins running in Kubernetes with DinD
+  ✅ Nexus private Docker registry ready
+  ✅ Gitea reachable inside cluster via Service/Endpoints
+  ✅ Fullstack app deployed with RBAC + NetworkPolicies
 ```
 
 ---
-
-*Document prepared for the DevOps & Kubernetes Cluster Project.*
-*Last updated: March 2026*

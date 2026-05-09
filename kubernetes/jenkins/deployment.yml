@@ -49,7 +49,7 @@ spec:
             - -c
             - |
               cp /usr/local/bin/docker /docker-bin/docker
-              wget -qO /docker-bin/kubectl https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl
+              wget -qO /docker-bin/kubectl https://storage.googleapis.com/kubernetes-release/release/v1.29.0/bin/linux/amd64/kubectl
               chmod +x /docker-bin/kubectl
           volumeMounts:
             - name: docker-bin
